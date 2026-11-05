@@ -51,10 +51,14 @@ class PostalApiSyncService
             if ($externalId === '') continue;
             $package = PostalPackage::firstOrNew(['source' => $source, 'external_id' => $externalId]);
             $new = ! $package->exists;
-            $events = $item['eventos'] ?? $item['events'] ?? $item['movimientos'] ?? [];
+            $events = $item['eventos'] ?? $item['events'] ?? $item['movimientos'] ?? data_get($item, 'tracking.events', data_get($item, 'history', []));
+            if (is_array($events) && isset($events['data']) && is_array($events['data'])) $events = $events['data'];
             $latest = $this->latestEvent($events);
-            $updatedAt = $this->date($latest['date'] ?? ($item['updated_at'] ?? null));
-            if ($updatedAt && ($updatedAt->lt($from) || $updatedAt->gt($to))) continue;
+            $updatedAt = $this->date($latest['date'] ?? ($item['updated_at'] ?? $item['fecha_actualizacion'] ?? null));
+            // No descartes una guía existente solo porque el proveedor devuelve
+            // el evento con una fecha fuera del filtro: todavía puede traer un
+            // estado actual distinto al almacenado localmente.
+            if ($new && $updatedAt && ($updatedAt->lt($from) || $updatedAt->gt($to))) continue;
             $phone = $this->firstValue($item, [
                 'destinatario.telefono', 'destinatario.celular', 'destinatario.mobile',
                 'destinatario.phone', 'destinatario.telefono_celular', 'destinatario.contacto.telefono',
@@ -68,7 +72,21 @@ class PostalApiSyncService
         }
         return compact('source', 'scope', 'created', 'updated') + ['months' => $months, 'from' => $from->toDateString(), 'to' => $to->toDateString(), 'received' => count($items)];
     }
-    private function latestEvent(mixed $events): array { if (! is_array($events) || count($events) === 0) return []; usort($events, fn($a,$b)=>strtotime((string)($b['fecha']??$b['date']??''))-strtotime((string)($a['fecha']??$a['date']??''))); $event=$events[0]??[]; return ['name'=>$event['nombre']??$event['evento_api']??$event['event_name']??$event['status']??null,'date'=>$event['fecha']??$event['date']??null]; }
+    private function latestEvent(mixed $events): array
+    {
+        if (!is_array($events) || count($events) === 0) return [];
+        $events = array_values(array_filter($events, 'is_array'));
+        usort($events, function (array $a, array $b): int {
+            $dateA = $this->date($a['fecha'] ?? $a['date'] ?? $a['fecha_evento'] ?? $a['event_date'] ?? $a['created_at'] ?? null)?->timestamp ?? 0;
+            $dateB = $this->date($b['fecha'] ?? $b['date'] ?? $b['fecha_evento'] ?? $b['event_date'] ?? $b['created_at'] ?? null)?->timestamp ?? 0;
+            return $dateB <=> $dateA;
+        });
+        $event = $events[0] ?? [];
+        return [
+            'name' => $event['nombre'] ?? $event['evento_api'] ?? $event['event_name'] ?? $event['status'] ?? $event['descripcion'] ?? $event['description'] ?? null,
+            'date' => $event['fecha'] ?? $event['date'] ?? $event['fecha_evento'] ?? $event['event_date'] ?? $event['created_at'] ?? null,
+        ];
+    }
     private function date(mixed $value): ?Carbon { return $value ? rescue(fn()=>Carbon::parse($value), null) : null; }
     private function firstValue(array $item, array $paths): ?string
     {

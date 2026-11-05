@@ -439,3 +439,36 @@ Para completar la integración real todavía se necesita:
 - Nacional queda limitado a SIOP e Internacional queda limitado a SITRA.
 - Los eventos se guardan en `postal_events` y el evento más reciente actualiza `postal_packages.current_event`.
 - Campañas separadas: `/campanas-postales/nacional` y `/campanas-postales/internacional`.
+- CampaÃ±as separadas: `/campanas-postales/nacional` y `/campanas-postales/internacional`.
+
+## 15. Estado verificado en el repositorio (28/10/2026)
+
+Esta secciÃ³n prevalece sobre cualquier descripciÃ³n anterior que indique un estado distinto.
+
+### Implementado y comprobado
+
+- Las migraciones existentes estÃ¡n ejecutadas, incluyendo `automatic_responses` y `ai_prompt_sections`.
+- La integraciÃ³n postal estÃ¡ normalizada en `PostalPackage` y `PostalEvent`, con `scope`, telÃ©fono de origen, telÃ©fono de destino, payload original y fecha de sincronizaciÃ³n.
+- `PostalApiSyncService` sincroniza por alcance: Nacional usa SIOP e Internacional usa SITRA. Recorre hasta 100 pÃ¡ginas de 200 registros, aplica rango de meses, reintentos, timeout, deduplicaciÃ³n por `source + external_id` y actualiza eventos.
+- El scheduler conserva sincronizaciÃ³n cada cinco minutos con `withoutOverlapping()` para el sincronizador genÃ©rico y para ambos alcances postales.
+- Existen las vistas y rutas de campaÃ±as generales, Nacional, Internacional y sus registros.
+- El componente de respuestas automÃ¡ticas permite crear, activar/desactivar y eliminar plantillas de tipo evento o cotizaciÃ³n.
+- `OllamaService` carga las secciones activas desde `ai_prompt_sections`.
+- Se agregaron los modos del asistente IA: seguimiento Nacional, seguimiento Internacional y Cotizaciones, todos protegidos por autenticaciÃ³n.
+- El layout agrega el grupo IA y sus enlaces, mantiene el acceso a respuestas automÃ¡ticas y oculta enlaces obsoletos de prompts.
+- Se validÃ³ correctamente `php artisan view:cache` y `npm run build`.
+
+### Cambios locales pendientes de consolidar
+
+- Hay cambios sin confirmar en `app/Services/OllamaService.php`, `resources/views/layouts/crm.blade.php` y `routes/web.php`.
+- Hay archivos nuevos sin confirmar para `AiPromptSection` y su migraciÃ³n.
+- Conviene probar en la interfaz los tres modos IA, el CRUD de respuestas automÃ¡ticas y una conversaciÃ³n completa con Ollama.
+
+### Pendiente real
+
+- Validar en ejecuciÃ³n las credenciales, disponibilidad y formato definitivo de SIOP y SITRA en cada ambiente.
+- Definir roles/autorizaciones para sincronizaciones, campaÃ±as y envÃ­os.
+- Completar Jobs/cola, pausa, reanudaciÃ³n, cancelaciÃ³n, rate limiting y proveedor real de WhatsApp si todavÃ­a no se habilitarÃ¡n desde la aplicaciÃ³n.
+- Completar persistencia del historial de conversaciones Sandbox si se requiere conservarlo mÃ¡s allÃ¡ de la sesiÃ³n actual.
+- Ejecutar pruebas automatizadas de deduplicaciÃ³n, actualizaciÃ³n de estados, modo prueba y fallos de APIs.
+- Configurar y validar Meta WhatsApp Cloud API Ãºnicamente para producciÃ³n; el Sandbox debe continuar sin llamadas reales.

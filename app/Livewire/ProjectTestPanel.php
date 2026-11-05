@@ -19,7 +19,6 @@ class ProjectTestPanel extends Component
             'database' => $this->checkDatabase(),
             'siop' => $this->checkPostalApi('siop'),
             'sitra' => $this->checkPostalApi('sitra'),
-            'ollama' => $this->checkOllama(),
             'packages' => $this->checkCounts(),
         ];
         $this->lastRun = now()->format('d/m/Y H:i:s');
@@ -45,23 +44,25 @@ class ProjectTestPanel extends Component
                 ->timeout(10)->acceptJson();
             if ($token) $request = $request->withToken($token);
             $response = $request->get($url, ['page' => 1, 'per_page' => 1]);
-            return ['ok' => $response->successful(), 'label' => strtoupper($source).' responde', 'detail' => $response->status().' · '.$url];
+            if ($response->unauthorized()) {
+                $credential = $token ? 'El servicio rechazó el token configurado.' : 'Falta configurar el token.';
+                $setting = $source === 'siop' ? 'PAQUETES_EVENTOS_API_TOKEN' : 'TRACKING_SQLSERVER_TOKEN';
+
+                return [
+                    'ok' => false,
+                    'label' => strtoupper($source).' rechazó autenticación',
+                    'detail' => "HTTP 401 · {$credential} Revisa {$setting} y solicita al administrador de la API un token vigente con acceso a este endpoint.",
+                ];
+            }
+
+            return [
+                'ok' => $response->successful(),
+                'label' => strtoupper($source).($response->successful() ? ' responde' : ' no disponible'),
+                'detail' => $response->status().' · '.$url,
+            ];
         } catch (\Throwable $e) {
             report($e);
             return ['ok' => false, 'label' => strtoupper($source).' no disponible', 'detail' => 'No se pudo consultar el servicio'];
-        }
-    }
-
-    private function checkOllama(): array
-    {
-        try {
-            $url = rtrim(config('services.ollama.url'), '/').'/api/tags';
-            $response = Http::timeout(5)->get($url);
-            $models = collect($response->json('models', []))->pluck('name')->implode(', ');
-            return ['ok' => $response->successful(), 'label' => 'Ollama responde', 'detail' => $models ?: 'Sin modelos detectados'];
-        } catch (\Throwable $e) {
-            report($e);
-            return ['ok' => false, 'label' => 'Ollama no disponible', 'detail' => 'No se pudo consultar el servicio'];
         }
     }
 

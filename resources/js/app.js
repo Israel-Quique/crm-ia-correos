@@ -163,3 +163,23 @@ document.querySelectorAll('.sidebar .nav-label').forEach((section) => {
     item = item.nextElementSibling;
   }
 });
+
+// Agrupa los módulos de automatización en el menú lateral.
+window.addEventListener('DOMContentLoaded', () => setTimeout(() => {
+  const sidebar = document.querySelector('.sidebar');
+  if (!sidebar || sidebar.dataset.automationGrouped) return;
+  const link = [...sidebar.querySelectorAll('.nav-item')].find((item) => item.href.includes('/automatizacion') || item.textContent.toLowerCase().includes('automatizaci'));
+  if (!link) return;
+  const label = document.createElement('div');
+  label.className = 'nav-label';
+  label.innerHTML = '⚙ &nbsp; AUTOMATIZACIÓN <b>▾</b>';
+  link.replaceWith(label);
+  const chat = document.createElement('a');
+  chat.className = 'nav-item'; chat.href = '/chat-automatizado';
+  chat.innerHTML = '<span>▣</span><em>Chat automatizado</em>';
+  const fallback = document.createElement('a');
+  fallback.className = 'nav-item' + (window.location.pathname === '/respuestas-automaticas' ? ' active' : ''); fallback.href = '/respuestas-automaticas';
+  fallback.innerHTML = '<span>⚙</span><em>Mensajes automáticos</em>';
+  label.after(chat, fallback);
+  sidebar.dataset.automationGrouped = '1';
+}, 0));

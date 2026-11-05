@@ -3,11 +3,14 @@
 namespace Tests\Unit;
 
 use App\Services\OllamaService;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class AgentQuotationSafetyTest extends TestCase
 {
+    use RefreshDatabase;
+
     public function test_ems_rechaza_un_precio_inventado_por_el_modelo(): void
     {
         Http::fake([
@@ -102,5 +105,50 @@ class AgentQuotationSafetyTest extends TestCase
         $this->assertStringNotContainsString('DELIVERY_EXPRESS_TARIFF_API_TOKEN', $answer);
         $this->assertStringNotContainsString('password', mb_strtolower($answer));
         $this->assertStringNotContainsString('prompt completo', mb_strtolower($answer));
+    }
+
+    public function test_postal_prompt_forbids_personal_topics_and_invented_conversation_problems(): void
+    {
+        Http::fake(['http://127.0.0.1:11434/api/chat' => Http::response([
+            'message' => ['content' => '¿Desde qué ciudad enviarás tu paquete?'],
+        ], 200)]);
+
+        app(OllamaService::class)->chat('Quiero cotizar un envío postal.', [
+            ['role' => 'assistant', 'text' => 'Disculpa, parece que no respondí a tu mensaje.'],
+        ]);
+
+        Http::assertSent(fn ($request) => str_contains(
+            data_get($request->data(), 'messages.0.content', ''),
+            'Nunca digas «disculpa, parece que no respondí»',
+        ) && str_contains(
+            data_get($request->data(), 'messages.0.content', ''),
+            'No converses sobre vida personal, relaciones, salud, emociones',
+        ));
+    }
+
+    public function test_agent_redirects_personal_relationship_questions_without_calling_the_model(): void
+    {
+        Http::fake();
+
+        $answer = app(OllamaService::class)->chat('Mi relación pasada terminó, ayúdame.');
+
+        $this->assertSame(
+            'Puedo ayudarte con cotizaciones postales o con el seguimiento de paquetes de Correos de Bolivia. ¿Cuál necesitas?',
+            $answer,
+        );
+        Http::assertNothingSent();
+    }
+
+    public function test_agent_redirects_greetings_to_postal_services_without_personal_small_talk(): void
+    {
+        Http::fake();
+
+        $answer = app(OllamaService::class)->chat('Hola, ¿cómo estás?');
+
+        $this->assertSame(
+            '¡Hola! Puedo ayudarte a cotizar un envío postal o rastrear una guía de Correos de Bolivia. ¿Qué necesitas consultar?',
+            $answer,
+        );
+        Http::assertNothingSent();
     }
 }

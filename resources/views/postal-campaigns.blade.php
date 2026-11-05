@@ -1,4 +1,4 @@
 @extends('layouts.crm', ['title' => 'Campañas Postales · Conversa OS'])
 @section('content')
-    @livewire('postal-campaign-manager', ['scope' => $scope ?? 'nacional'])
+    @livewire('postal-campaign-registry', ['scope' => $scope ?? 'nacional'])
 @endsection
