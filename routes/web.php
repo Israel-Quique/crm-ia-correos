@@ -20,7 +20,7 @@ Route::post('/login', function () {
     }
 
     request()->session()->regenerate();
-    return redirect()->route('dashboard');
+    return redirect()->route('chat');
 })->name('login.store');
 Route::get('/webhooks/whatsapp', [WhatsAppWebhookController::class, 'verify']);
 Route::post('/webhooks/whatsapp', [WhatsAppWebhookController::class, 'receive']);
@@ -28,7 +28,6 @@ Route::post('/webhooks/whatsapp', [WhatsAppWebhookController::class, 'receive'])
 Route::get('/api/integrations/whatsapp/webhook', [WhatsAppWebhookController::class, 'verify']);
 Route::post('/api/integrations/whatsapp/webhook', [WhatsAppWebhookController::class, 'receive']);
 Route::middleware('auth')->group(function () {
-    Route::view('/dashboard', 'dashboard')->name('dashboard');
     Route::post('/logout', function () {
         Auth::logout();
         request()->session()->invalidate();
