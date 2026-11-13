@@ -21,6 +21,14 @@ Laravel is a web application framework with expressive, elegant syntax. We belie
 
 Laravel is accessible, powerful, and provides tools required for large, robust applications.
 
+## Procesamiento de mensajes de WhatsApp
+
+Los mensajes entrantes se agrupan durante un minuto en la cola de base de datos. `composer dev` inicia el servidor, el scheduler y los demás procesos locales; el scheduler procesa la cola cada minuto. Si ejecutas `php artisan serve` por separado, también debes mantener activo `php artisan schedule:work` (o un worker de cola). Las respuestas pendientes con más de 24 horas se omiten para respetar la ventana de conversación de WhatsApp.
+
+## Operaciones postales
+
+El módulo `/tarifas` consulta el tarifario vigente de Delivery Express y permite cotizar EMS con Postar. Los tarifarios se consultan desde sus APIs y no se editan localmente. `/rastreo/nacional` lista paquetes SIOP y `/rastreo/internacional` lista paquetes SITRA; ambas pantallas permiten buscar guías, consultar sus eventos y sincronizar un rango de fechas.
+
 ## Learning Laravel
 
 Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.

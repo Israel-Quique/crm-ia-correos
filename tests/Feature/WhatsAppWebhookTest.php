@@ -9,6 +9,9 @@ use App\Models\PostalCampaignMessage;
 use App\Models\PostalPackage;
 use App\Models\WhatsAppMessage;
 use App\Livewire\Chat;
+use App\Jobs\ProcessWhatsAppInboundMedia;
+use App\Services\LanguageService;
+use App\Services\WhatsAppCloudApiService;
 use App\Services\WhatsAppAutoReplyService;
 use Carbon\Carbon;
 use App\Services\OllamaService;
@@ -16,6 +19,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Storage;
 use Livewire\Livewire;
 use Mockery;
@@ -47,14 +51,14 @@ class WhatsAppWebhookTest extends TestCase
         $this->setPreference('ai_enabled', true);
 
         $ollama = Mockery::mock(OllamaService::class);
-        $ollama->shouldReceive('chat')->once()->with('Hola', [], 'general')->andReturn('¡Hola! ¿En qué te ayudo?');
+        $ollama->shouldReceive('chat')->once()->with('Necesito ayuda', [], 'general')->andReturn('¡Hola! ¿En qué te ayudo?');
         $this->app->instance(OllamaService::class, $ollama);
 
         Http::fake([
             'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.out.1']]], 200),
         ]);
 
-        $payload = $this->incomingPayload(self::TEST_PHONE, 'wamid.in.1', 'Hola');
+        $payload = $this->incomingPayload(self::TEST_PHONE, 'wamid.in.1', 'Necesito ayuda');
         $this->postWebhook($payload)->assertOk()->assertJson(['received' => true]);
         $this->postWebhook($payload)->assertOk()->assertJson(['received' => true]);
         $this->processAutoReply('wamid.in.1');
@@ -91,13 +95,13 @@ class WhatsAppWebhookTest extends TestCase
         ]);
 
         $ollama = Mockery::mock(OllamaService::class);
-        $ollama->shouldReceive('chat')->once()->with('Hola', [], 'general')->andReturn('Respuesta de prueba.');
+        $ollama->shouldReceive('chat')->once()->with('Necesito ayuda', [], 'general')->andReturn('Respuesta de prueba.');
         $this->app->instance(OllamaService::class, $ollama);
         Http::fake([
             'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.out.registered']]], 200),
         ]);
 
-        $this->postWebhook($this->incomingPayload($sender, 'wamid.in.registered', 'Hola'))
+        $this->postWebhook($this->incomingPayload($sender, 'wamid.in.registered', 'Necesito ayuda'))
             ->assertOk()
             ->assertJson(['received' => true]);
         $this->processAutoReply('wamid.in.registered');
@@ -207,7 +211,40 @@ class WhatsAppWebhookTest extends TestCase
             'provider_message_id' => 'wamid.in.other',
             'direction' => 'inbound',
         ]);
+        $this->processAutoReply('wamid.in.other');
+        $this->assertDatabaseHas('whatsapp_messages', [
+            'provider_message_id' => 'wamid.in.other',
+            'auto_reply_status' => 'ignored',
+        ]);
         $this->assertSame(2, WhatsAppMessage::count());
+        Http::assertNothingSent();
+    }
+
+    public function test_stale_queued_reply_is_ignored_after_the_whatsapp_window_expires(): void
+    {
+        $this->setPreference('test_mode', true);
+        $this->setPreference('ai_enabled', true);
+        $incoming = WhatsAppMessage::create([
+            'provider_message_id' => 'wamid.in.expired',
+            'phone' => self::TEST_PHONE,
+            'direction' => 'inbound',
+            'message_type' => 'text',
+            'message' => 'Hola',
+            'status' => 'received',
+            'received_at' => now()->subHours(25),
+        ]);
+
+        $ollama = Mockery::mock(OllamaService::class);
+        $ollama->shouldNotReceive('chat');
+        $this->app->instance(OllamaService::class, $ollama);
+        Http::fake();
+
+        app(WhatsAppAutoReplyService::class)->replyTo($incoming);
+
+        $this->assertDatabaseHas('whatsapp_messages', [
+            'provider_message_id' => 'wamid.in.expired',
+            'auto_reply_status' => 'ignored',
+        ]);
         Http::assertNothingSent();
     }
 
@@ -217,14 +254,14 @@ class WhatsAppWebhookTest extends TestCase
         $this->setPreference('ai_enabled', true);
 
         $ollama = Mockery::mock(OllamaService::class);
-        $ollama->shouldReceive('chat')->once()->with('Hola', [], 'general')->andReturn('Respuesta del agente.');
+        $ollama->shouldReceive('chat')->once()->with('Necesito ayuda', [], 'general')->andReturn('Respuesta del agente.');
         $this->app->instance(OllamaService::class, $ollama);
         Http::fake([
             'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.out.live']]], 200),
         ]);
 
         $sender = '15557654321';
-        $this->postWebhook($this->incomingPayload($sender, 'wamid.in.live', 'Hola'))
+        $this->postWebhook($this->incomingPayload($sender, 'wamid.in.live', 'Necesito ayuda'))
             ->assertOk()
             ->assertJson(['received' => true]);
         $this->processAutoReply('wamid.in.live');
@@ -324,7 +361,7 @@ class WhatsAppWebhookTest extends TestCase
         $this->app->instance(OllamaService::class, $ollama);
         Http::fake();
 
-        $this->postWebhook($this->incomingPayload('15557654321', 'wamid.in.agent-failed', 'Hola'))
+        $this->postWebhook($this->incomingPayload('15557654321', 'wamid.in.agent-failed', 'Necesito ayuda'))
             ->assertOk()
             ->assertJson(['received' => true]);
         $this->processAutoReply('wamid.in.agent-failed');
@@ -339,7 +376,7 @@ class WhatsAppWebhookTest extends TestCase
     public function test_it_uses_a_matching_configured_automatic_response(): void
     {
         $this->setPreference('test_mode', true);
-        $this->setPreference('ai_enabled', true);
+        $this->setPreference('ai_enabled', false);
         $this->setPreference('automatic_responses_enabled', true);
         AutomaticResponse::create([
             'scope' => 'general',
@@ -367,6 +404,39 @@ class WhatsAppWebhookTest extends TestCase
             'message' => 'Respuesta de prueba configurada.',
         ]);
         Http::assertSent(fn ($request) => $request['to'] === self::TEST_PHONE);
+    }
+
+    public function test_greeting_trigger_uses_its_template_before_ai(): void
+    {
+        $this->setPreference('test_mode', true);
+        $this->setPreference('ai_enabled', true);
+        $this->setPreference('automatic_responses_enabled', true);
+        AutomaticResponse::create([
+            'scope' => 'general',
+            'type' => 'event',
+            'key' => 'saludo',
+            'name' => 'Saludo personalizado',
+            'template' => 'Bienvenido; dime si deseas cotizar o rastrear.',
+            'trigger_phrases' => ['buenas tardes'],
+            'active' => true,
+        ]);
+
+        $ollama = Mockery::mock(OllamaService::class);
+        $ollama->shouldNotReceive('chat');
+        $this->app->instance(OllamaService::class, $ollama);
+        Http::fake([
+            'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.out.greeting-trigger']]], 200),
+        ]);
+
+        $this->postWebhook($this->incomingPayload(self::TEST_PHONE, 'wamid.in.greeting-trigger', 'Buenas tardes'))
+            ->assertOk();
+        $this->processAutoReply('wamid.in.greeting-trigger');
+
+        $this->assertDatabaseHas('whatsapp_messages', [
+            'provider_message_id' => 'wamid.out.greeting-trigger',
+            'message' => 'Bienvenido; dime si deseas cotizar o rastrear.',
+            'source' => 'automatic',
+        ]);
     }
 
     public function test_configured_automatic_response_works_when_ai_is_disabled(): void
@@ -401,6 +471,180 @@ class WhatsAppWebhookTest extends TestCase
         $this->assertDatabaseHas('whatsapp_messages', [
             'provider_message_id' => 'wamid.in.auto-only',
             'auto_reply_status' => 'sent',
+        ]);
+    }
+
+    public function test_automatic_quote_response_starts_the_decision_tree(): void
+    {
+        $this->setPreference('test_mode', true);
+        $this->setPreference('ai_enabled', false);
+        $this->setPreference('automatic_responses_enabled', true);
+
+        $ollama = Mockery::mock(OllamaService::class);
+        $ollama->shouldNotReceive('chat');
+        $this->app->instance(OllamaService::class, $ollama);
+        Http::fake([
+            'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.out.quote-flow']]], 200),
+        ]);
+
+        $this->postWebhook($this->incomingPayload(self::TEST_PHONE, 'wamid.in.quote-flow', 'Quiero cotizar Delivery Express'))->assertOk();
+        $this->processAutoReply('wamid.in.quote-flow');
+
+        $this->assertDatabaseHas('whatsapp_messages', [
+            'provider_message_id' => 'wamid.out.quote-flow',
+            'source' => 'automatic_decision_tree',
+        ]);
+        $this->assertStringContainsString(
+            '¿Desde qué ciudad de Bolivia se enviará el paquete?',
+            WhatsAppMessage::where('provider_message_id', 'wamid.out.quote-flow')->value('message'),
+        );
+        $this->assertDatabaseHas('whatsapp_decision_tree_sessions', [
+            'phone' => self::TEST_PHONE,
+            'flow_key' => 'quote',
+            'step' => 'quote_origin',
+        ]);
+    }
+
+    public function test_natural_send_request_trigger_starts_the_quote_tree(): void
+    {
+        $this->setPreference('test_mode', true);
+        $this->setPreference('ai_enabled', false);
+        $this->setPreference('automatic_responses_enabled', true);
+
+        $ollama = Mockery::mock(OllamaService::class);
+        $ollama->shouldNotReceive('chat');
+        $this->app->instance(OllamaService::class, $ollama);
+        Http::fake([
+            'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.out.natural-quote']]], 200),
+        ]);
+
+        $message = 'Quisiera cotizar el envio de un paquete de La Paz a Oruro';
+        $this->postWebhook($this->incomingPayload(self::TEST_PHONE, 'wamid.in.natural-quote', $message))
+            ->assertOk();
+        $this->processAutoReply('wamid.in.natural-quote');
+
+        $this->assertDatabaseHas('whatsapp_messages', [
+            'provider_message_id' => 'wamid.out.natural-quote',
+            'source' => 'automatic_decision_tree',
+        ]);
+        $this->assertStringContainsString(
+            '3. Delivery Express',
+            WhatsAppMessage::where('provider_message_id', 'wamid.out.natural-quote')->value('message'),
+        );
+        $session = \App\Models\WhatsAppDecisionTreeSession::where('phone', self::TEST_PHONE)->firstOrFail();
+        $this->assertSame('quote_scope', $session->step);
+        $this->assertArrayHasKey('pending_national_route', $session->context);
+    }
+
+    public function test_decision_tree_precedes_ai_for_quotes_when_both_are_enabled(): void
+    {
+        $this->setPreference('test_mode', true);
+        $this->setPreference('ai_enabled', true);
+        $this->setPreference('automatic_responses_enabled', true);
+
+        $ollama = Mockery::mock(OllamaService::class);
+        $ollama->shouldNotReceive('chat');
+        $this->app->instance(OllamaService::class, $ollama);
+        Http::fake([
+            'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.out.quote-ai-priority']]], 200),
+        ]);
+
+        $this->postWebhook($this->incomingPayload(self::TEST_PHONE, 'wamid.in.quote-ai-priority', 'Quiero cotizar EMS nacional'))->assertOk();
+        $this->processAutoReply('wamid.in.quote-ai-priority');
+
+        $this->assertDatabaseHas('whatsapp_messages', [
+            'provider_message_id' => 'wamid.out.quote-ai-priority',
+            'source' => 'automatic_decision_tree',
+        ]);
+        $this->assertStringContainsString(
+            '¿Desde qué ciudad de Bolivia se enviará el paquete?',
+            WhatsAppMessage::where('provider_message_id', 'wamid.out.quote-ai-priority')->value('message'),
+        );
+    }
+
+    public function test_automatic_quote_flow_keeps_context_when_the_customer_answers(): void
+    {
+        $this->setPreference('test_mode', true);
+        $this->setPreference('ai_enabled', false);
+        $this->setPreference('automatic_responses_enabled', true);
+        WhatsAppMessage::create([
+            'provider_message_id' => 'wamid.in.quote-context',
+            'phone' => self::TEST_PHONE,
+            'direction' => 'inbound',
+            'message_type' => 'text',
+            'message' => 'Quiero cotizar Delivery Express de La Paz a Santa Cruz.',
+            'status' => 'received',
+            'auto_reply_status' => 'sent',
+            'received_at' => now()->subMinutes(2),
+        ]);
+        WhatsAppMessage::create([
+            'provider_message_id' => 'wamid.out.quote-context',
+            'phone' => self::TEST_PHONE,
+            'direction' => 'outbound',
+            'message_type' => 'text',
+            'message' => '¿Qué modalidad prefieres y cuánto pesa el paquete?',
+            'status' => 'sent',
+            'source' => 'automatic_workflow',
+            'received_at' => now()->subMinute(),
+        ]);
+
+        $this->assertSame('es', app(LanguageService::class)->detect('Puerta a puerta, pesa 2 kg.'));
+        $ollama = Mockery::mock(OllamaService::class);
+        $ollama->shouldReceive('chat')
+            ->once()
+            ->withArgs(fn ($message, $history, $mode) => $message === 'Puerta a puerta, pesa 2 kg.'
+                && $mode === 'general'
+                && count($history) === 2
+                && $history[0]['text'] === 'Quiero cotizar Delivery Express de La Paz a Santa Cruz.'
+                && $history[1]['source'] === 'automatic_workflow')
+            ->andReturn('La tarifa oficial verificada es Bs. 15.00.');
+        $this->app->instance(OllamaService::class, $ollama);
+        Http::fake([
+            'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.out.quote-followup']]], 200),
+        ]);
+
+        $this->postWebhook($this->incomingPayload(self::TEST_PHONE, 'wamid.in.quote-followup', 'Puerta a puerta, pesa 2 kg.'))->assertOk();
+        $this->processAutoReply('wamid.in.quote-followup');
+
+        $this->assertDatabaseHas('whatsapp_messages', [
+            'provider_message_id' => 'wamid.in.quote-followup',
+            'auto_reply_status' => 'sent',
+        ]);
+        $this->assertDatabaseHas('whatsapp_messages', [
+            'provider_message_id' => 'wamid.out.quote-followup',
+            'message' => 'La tarifa oficial verificada es Bs. 15.00.',
+            'source' => 'automatic_workflow',
+        ]);
+    }
+
+    public function test_automatic_tracking_response_starts_the_decision_tree(): void
+    {
+        $this->setPreference('test_mode', true);
+        $this->setPreference('ai_enabled', false);
+        $this->setPreference('automatic_responses_enabled', true);
+
+        $ollama = Mockery::mock(OllamaService::class);
+        $ollama->shouldNotReceive('chat');
+        $this->app->instance(OllamaService::class, $ollama);
+        Http::fake([
+            'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.out.tracking-flow']]], 200),
+        ]);
+
+        $this->postWebhook($this->incomingPayload(self::TEST_PHONE, 'wamid.in.tracking-flow', '¿Dónde está mi paquete?'))->assertOk();
+        $this->processAutoReply('wamid.in.tracking-flow');
+
+        $this->assertDatabaseHas('whatsapp_messages', [
+            'provider_message_id' => 'wamid.out.tracking-flow',
+            'source' => 'automatic_decision_tree',
+        ]);
+        $this->assertStringContainsString(
+            'número completo de guía',
+            WhatsAppMessage::where('provider_message_id', 'wamid.out.tracking-flow')->value('message'),
+        );
+        $this->assertDatabaseHas('whatsapp_decision_tree_sessions', [
+            'phone' => self::TEST_PHONE,
+            'flow_key' => 'tracking',
+            'step' => 'tracking_number',
         ]);
     }
 
@@ -573,6 +817,38 @@ class WhatsAppWebhookTest extends TestCase
             ->assertSee('Mensaje entrante reciente');
     }
 
+    public function test_chat_filters_conversations_by_phone_number_ignoring_formatting(): void
+    {
+        WhatsAppMessage::create([
+            'provider_message_id' => 'wamid.chat.search.first',
+            'phone' => '+591 700-000-01',
+            'direction' => 'inbound',
+            'message_type' => 'text',
+            'message' => 'Primer contacto',
+            'status' => 'received',
+            'received_at' => now()->subMinute(),
+        ]);
+        WhatsAppMessage::create([
+            'provider_message_id' => 'wamid.chat.search.second',
+            'phone' => '+591 711-000-02',
+            'direction' => 'inbound',
+            'message_type' => 'text',
+            'message' => 'Segundo contacto',
+            'status' => 'received',
+            'received_at' => now(),
+        ]);
+
+        Livewire::test(Chat::class)
+            ->assertSee('wire:model.live.debounce.300ms="phoneSearch"', false)
+            ->set('phoneSearch', '700 000 01')
+            ->assertSee('aria-label="Abrir chat con +591 700-000-01"', false)
+            ->assertDontSee('aria-label="Abrir chat con +591 711-000-02"', false)
+            ->assertSee('Segundo contacto')
+            ->assertSee('0 mensajes de campaña · 2 mensajes entrantes')
+            ->set('phoneSearch', '123456789')
+            ->assertSee('No se encontraron conversaciones con ese número.');
+    }
+
     public function test_chat_shows_unread_incoming_count_and_clears_it_when_opened(): void
     {
         WhatsAppMessage::create([
@@ -639,6 +915,7 @@ class WhatsAppWebhookTest extends TestCase
     {
         $this->setPreference('test_mode', false);
         $this->setPreference('ai_enabled', true);
+        $this->setPreference('automatic_responses_enabled', false);
         $firstAt = now()->subMinute();
 
         $first = WhatsAppMessage::create([
@@ -756,6 +1033,7 @@ class WhatsAppWebhookTest extends TestCase
     {
         $this->actingAs(User::factory()->create());
         Storage::fake('local');
+        Queue::fake();
         $image = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j7S8AAAAASUVORK5CYII=', true);
         Http::fake([
             'graph.facebook.com/*' => Http::response([
@@ -774,7 +1052,13 @@ class WhatsAppWebhookTest extends TestCase
         ];
 
         $this->postWebhook($payload)->assertOk()->assertJson(['received' => true]);
+        Queue::assertPushed(ProcessWhatsAppInboundMedia::class, fn (ProcessWhatsAppInboundMedia $job): bool => $job->mediaId === 'media.image.1'
+            && $job->mediaType === 'image');
+        Http::assertNothingSent();
         $message = WhatsAppMessage::where('provider_message_id', 'wamid.image.loaded')->firstOrFail();
+        (new ProcessWhatsAppInboundMedia($message->id, 'media.image.1', 'image'))
+            ->handle(app(WhatsAppCloudApiService::class));
+        $message->refresh();
         $path = data_get($message->raw_payload, 'image.local_path');
         Storage::disk('local')->assertExists($path);
 

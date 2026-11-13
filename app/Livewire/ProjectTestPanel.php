@@ -17,11 +17,65 @@ class ProjectTestPanel extends Component
     {
         $this->checks = [
             'database' => $this->checkDatabase(),
+            'ollama' => $this->checkOllama(),
             'siop' => $this->checkPostalApi('siop'),
             'sitra' => $this->checkPostalApi('sitra'),
             'packages' => $this->checkCounts(),
+            'whatsapp' => $this->checkWhatsAppConfig(),
+            'storage' => $this->checkStorage(),
         ];
         $this->lastRun = now()->format('d/m/Y H:i:s');
+    }
+
+    private function checkOllama(): array
+    {
+        $url = rtrim((string) config('services.ollama.url'), '/');
+        $model = (string) config('services.ollama.model');
+
+        try {
+            $response = Http::timeout(8)->acceptJson()->get($url.'/api/tags');
+            if (! $response->successful()) {
+                return ['ok' => false, 'label' => 'Ollama no disponible', 'detail' => "HTTP {$response->status()} · {$url}"];
+            }
+
+            $models = collect($response->json('models', []))->pluck('name')->filter()->values();
+            $modelFound = $models->contains(fn (string $name): bool => $name === $model || str_starts_with($name, $model.':'));
+
+            return [
+                'ok' => $modelFound,
+                'label' => $modelFound ? 'Ollama conectado' : 'Ollama conectado, modelo faltante',
+                'detail' => $modelFound
+                    ? "Modelo {$model} disponible · {$url}"
+                    : "No se encontró {$model}. Modelos disponibles: ".($models->take(4)->implode(', ') ?: 'ninguno'),
+            ];
+        } catch (\Throwable $e) {
+            report($e);
+            return ['ok' => false, 'label' => 'Ollama no disponible', 'detail' => "No se pudo conectar a {$url}"];
+        }
+    }
+
+    private function checkWhatsAppConfig(): array
+    {
+        $required = ['phone_number_id', 'access_token', 'verify_token'];
+        $missing = collect($required)->filter(fn (string $key): bool => blank(config("services.whatsapp.{$key}")));
+
+        return [
+            'ok' => $missing->isEmpty(),
+            'label' => $missing->isEmpty() ? 'WhatsApp configurado' : 'WhatsApp incompleto',
+            'detail' => $missing->isEmpty() ? 'Credenciales principales configuradas.' : 'Falta: '.$missing->map(fn ($key) => 'WHATSAPP_'.strtoupper($key))->implode(', '),
+        ];
+    }
+
+    private function checkStorage(): array
+    {
+        $paths = [storage_path(), storage_path('framework/cache'), storage_path('logs')];
+        $unwritable = collect($paths)->filter(fn (string $path): bool => ! is_writable($path));
+
+        return [
+            'ok' => $unwritable->isEmpty(),
+            'label' => $unwritable->isEmpty() ? 'Almacenamiento disponible' : 'Almacenamiento con error',
+            'detail' => $unwritable->isEmpty() ? 'Directorios de Laravel escribibles.' : 'Sin permisos de escritura: '.$unwritable->implode(', '),
+        ];
     }
 
     private function checkDatabase(): array

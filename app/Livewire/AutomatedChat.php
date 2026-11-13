@@ -5,7 +5,6 @@ namespace App\Livewire;
 use App\Models\AutomaticResponse;
 use App\Models\PostalPackage;
 use App\Services\DeliveryExpressQuoteService;
-use App\Services\EmsCalculator;
 use App\Services\PostarQuoteService;
 use App\Services\AutomaticResponseMatcher;
 use Livewire\Component;
@@ -15,16 +14,16 @@ class AutomatedChat extends Component
     public string $message = '';
     public array $messages = [];
 
-    public function send(EmsCalculator $ems, DeliveryExpressQuoteService $delivery, PostarQuoteService $postar): void
+    public function send(PostarQuoteService $postar, DeliveryExpressQuoteService $delivery): void
     {
         $this->validate(['message' => 'required|string|max:1000']);
         $input = trim($this->message);
         $this->messages[] = ['role' => 'user', 'text' => $input];
-        $this->messages[] = ['role' => 'assistant', 'text' => $this->conversationReply($input, $ems, $delivery, $postar)];
+        $this->messages[] = ['role' => 'assistant', 'text' => $this->conversationReply($input, $postar, $delivery)];
         $this->message = '';
     }
 
-    private function conversationReply(string $input, EmsCalculator $ems, DeliveryExpressQuoteService $delivery, PostarQuoteService $postar): string
+    private function conversationReply(string $input, PostarQuoteService $postar, DeliveryExpressQuoteService $delivery): string
     {
         if ($tracking = $this->trackingRequest($input)) {
             return $this->trackingReply($tracking);
@@ -52,7 +51,7 @@ class AutomatedChat extends Component
         if ($service === 'ems') {
             $weight = $this->weight($userText);
             if ($weight === null) return "Perfecto. Para EMS desde {$route['origin_name']} hasta {$route['destination_name']}, ¿cuánto pesa el paquete?";
-            try { $q = $ems->calculate('EMS NAT', $route['destination'], $weight); return sprintf('La tarifa verificada de EMS para %.2f kg desde %s hasta %s es de Bs. %.2f.', $weight, $route['origin_name'], $route['destination_name'], $q['tariff']); }
+            try { $q = $postar->quote('EMS NAT', $route['destination'], $weight); return sprintf('La tarifa verificada de EMS para %.2f kg desde %s hasta %s es de Bs. %.2f.', $weight, $route['origin_name'], $route['destination_name'], $q['tariff']); }
             catch (\Throwable) { return 'No pude confirmar la tarifa oficial de EMS en este momento. Intenta nuevamente más tarde.'; }
         }
         return $this->resolveResponse($input)?->template ?? 'Indícame si deseas cotizar un envío o rastrear un paquete.';

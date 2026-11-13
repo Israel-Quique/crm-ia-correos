@@ -6,6 +6,7 @@ use App\Jobs\SyncCdsDeclarationsForCampaign;
 use App\Jobs\SendPostalCampaignMessages;
 use App\Livewire\PostalCampaignManager;
 use App\Livewire\PostalCampaignRegistry;
+use App\Livewire\PostalCampaignTemplates;
 use App\Livewire\WhatsAppTestNumbers;
 use App\Livewire\Chat;
 use App\Models\PostalCampaign;
@@ -24,6 +25,70 @@ class PostalCampaignCreationTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_campaign_chat_and_framework_labels_are_in_spanish(): void
+    {
+        $this->assertSame('es', app()->getLocale());
+        $this->assertSame('Anterior', __('pagination.previous'));
+        $this->assertSame('Siguiente', __('pagination.next'));
+        $this->assertSame('El campo :attribute es obligatorio.', __('validation.required'));
+        $this->assertStringContainsString('hace', now()->subMinute()->diffForHumans());
+
+        $registry = Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional']);
+        $this->assertSame('Preparada', $registry->instance()->campaignStatusLabel('prepared'));
+        $this->assertSame('Estado no identificado', $registry->instance()->campaignStatusLabel('unmapped'));
+        $this->assertSame('Error al enviar', $registry->instance()->messageStatusLabel('failed'));
+        $this->assertSame('Entregado', $registry->instance()->messageStatusLabel('delivered'));
+
+        $manager = Livewire::test(PostalCampaignManager::class, ['scope' => 'nacional']);
+        $this->assertSame('Preparada', $manager->instance()->campaignStatusLabel('prepared'));
+        $this->assertSame('Entregado', $manager->instance()->messageStatusLabel('delivered'));
+
+        $templates = Livewire::test(PostalCampaignTemplates::class, ['scope' => 'nacional']);
+        $this->assertSame(
+            ['Origen', 'Camino', 'Ventanilla', 'Cartero'],
+            array_column($templates->instance()->categories(), 'label'),
+        );
+        $templates
+            ->assertSee('Origen')
+            ->assertSee('Camino')
+            ->assertSee('Ventanilla')
+            ->assertSee('Cartero')
+            ->assertDontSee('Llegó a destino')
+            ->assertDontSee('Entregado');
+
+        $internationalTemplates = Livewire::test(PostalCampaignTemplates::class, ['scope' => 'internacional']);
+        $this->assertSame(
+            ['Ventanilla', 'Internacional'],
+            array_column($internationalTemplates->instance()->categories(), 'label'),
+        );
+        $internationalTemplates
+            ->assertSee('Ventanilla')
+            ->assertSee('Internacional')
+            ->assertDontSee('Llegada a Bolivia')
+            ->assertDontSee('Salida de Bolivia')
+            ->assertDontSee('Aduana')
+            ->assertDontSee('Distribución nacional')
+            ->assertDontSee('Última milla')
+            ->assertDontSee('Cartero')
+            ->assertDontSee('Entregado')
+            ->set('selectedCategory', 'international')
+            ->set('name', 'Mensaje internacional personalizado')
+            ->set('template', 'Actualización general para {tracking_number}')
+            ->call('save')
+            ->assertHasNoErrors();
+        $this->assertDatabaseHas('postal_campaign_templates', [
+            'scope' => 'internacional',
+            'category' => 'international',
+            'name' => 'Mensaje internacional personalizado',
+            'template' => 'Actualización general para {tracking_number}',
+        ]);
+
+        $chat = Livewire::test(Chat::class);
+        $this->assertSame('Entregado', $chat->instance()->messageStatusLabel('delivered'));
+        $this->assertSame('Ubicación', $chat->instance()->messageTypeLabel('location'));
+        $this->assertSame('Estado no identificado', $chat->instance()->messageStatusLabel('unmapped'));
+    }
+
     public function test_it_can_create_a_national_campaign_from_the_campaign_page(): void
     {
         $this->assertCampaignCanBeCreated('nacional', [
@@ -41,6 +106,35 @@ class PostalCampaignCreationTest extends TestCase
         ]);
     }
 
+    public function test_international_campaign_uses_the_general_template_for_non_pickup_events(): void
+    {
+        Queue::fake();
+        $this->actingAs(User::factory()->create());
+
+        PostalPackage::create([
+            'source' => 'sitra',
+            'scope' => 'internacional',
+            'external_id' => 'international-general-template',
+            'tracking_number' => 'EE123456789AR',
+            'recipient' => 'Destinatario internacional',
+            'phone' => '+59170000002',
+            'current_event' => 'Envío recibido en aduana',
+            'updated_at_api' => now(),
+            'cds_synced_at' => now(),
+        ]);
+
+        Livewire::test(PostalCampaignManager::class, ['scope' => 'internacional'])
+            ->set('testMode', false)
+            ->set('campaignName', 'Campaña internacional general')
+            ->call('applyFilters')
+            ->call('prepareCampaign')
+            ->assertHasNoErrors();
+
+        $campaign = PostalCampaign::where('name', 'Campaña internacional general')->firstOrFail();
+        $message = $campaign->messages()->firstOrFail();
+        $this->assertStringContainsString('Estado actual: Envío recibido en aduana.', $message->message);
+    }
+
     public function test_national_campaign_page_shows_registry_and_moves_creation_into_a_modal(): void
     {
         $this->actingAs(User::factory()->create());
@@ -51,6 +145,11 @@ class PostalCampaignCreationTest extends TestCase
         $this->get(route('postal-campaigns.national.registry'))
             ->assertOk()
             ->assertSee('Campañas nacionales')
+            ->assertSee('Total de registros')
+            ->assertSee('Completados')
+            ->assertSee('En preparación')
+            ->assertSee('Mensajes enviados')
+            ->assertSee('Filtros de búsqueda')
             ->assertSee('Crear campaña')
             ->assertSee('registryCreateCampaign')
             ->assertDontSee('Filtrar paquetes')
@@ -60,14 +159,20 @@ class PostalCampaignCreationTest extends TestCase
         Livewire::test(\App\Livewire\PostalCampaignRegistry::class, ['scope' => 'nacional'])
             ->call('openCreateCampaign')
             ->assertSet('showCreateCampaign', true)
-            ->assertSee('Nueva campaña nacional');
+            ->assertSee('Nueva campaña nacional')
+            ->assertSee('Cargando paquetes y filtros');
 
         Livewire::test(PostalCampaignManager::class, [
             'scope' => 'nacional',
             'modalMode' => true,
         ])
             ->assertDontSee('Aplicar filtros')
-            ->assertDontSee('Limpiar filtros');
+            ->assertDontSee('Limpiar filtros')
+            ->assertSee('Departamento')
+            ->assertSee('wire:model.live="destinationDepartment"', false)
+            ->assertDontSee('Cantidad máxima')
+            ->assertDontSee('Departamento de origen')
+            ->assertDontSee('wire:model.live="originDepartment"', false);
     }
 
     public function test_national_and_international_registry_pages_are_the_primary_campaign_links(): void
@@ -99,6 +204,15 @@ class PostalCampaignCreationTest extends TestCase
     public function test_modal_campaign_creation_uses_current_filters_and_notifies_registry(): void
     {
         $this->actingAs(User::factory()->create());
+        config([
+            'services.whatsapp.phone_number_id' => 'test-phone-number-id',
+            'services.whatsapp.access_token' => 'test-access-token',
+            'services.whatsapp.api_version' => 'v23.0',
+            'services.whatsapp.ca_bundle' => null,
+        ]);
+        Http::fake([
+            'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.modal.auto']]], 200),
+        ]);
         PostalPackage::create([
             'source' => 'siop',
             'scope' => 'nacional',
@@ -120,12 +234,77 @@ class PostalCampaignCreationTest extends TestCase
             ->set('campaignName', 'Campaña desde modal')
             ->call('prepareCampaign')
             ->assertHasNoErrors()
-            ->assertDispatched('campaign-created');
+            ->assertDispatched('campaign-created')
+            ->assertDispatched('campaign-modal-close');
 
         $this->assertDatabaseHas('postal_campaigns', [
             'name' => 'Campaña desde modal',
             'total' => 1,
+            'status' => 'sending',
         ]);
+        Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->assertSee('wire:poll.500ms="processNextCampaignMessage"', false)
+            ->call('processNextCampaignMessage');
+        Http::assertSent(fn ($request) => $request['to'] === '59170000003');
+        $this->assertDatabaseHas('postal_campaigns', [
+            'name' => 'Campaña desde modal',
+            'status' => 'sent',
+            'sent' => 1,
+            'pending' => 0,
+        ]);
+    }
+
+    public function test_modal_campaign_sends_all_matching_department_packages_without_a_maximum(): void
+    {
+        $this->actingAs(User::factory()->create());
+
+        for ($index = 0; $index < 51; $index++) {
+            PostalPackage::create([
+                'source' => 'siop',
+                'scope' => 'nacional',
+                'external_id' => 'unlimited-modal-package-'.$index,
+                'tracking_number' => 'NA'.str_pad((string) $index, 10, '0', STR_PAD_LEFT),
+                'phone' => '+591700010'.str_pad((string) $index, 2, '0', STR_PAD_LEFT),
+                'recipient' => 'Destinatario '.$index,
+                'current_event' => 'En camino',
+                'updated_at_api' => now(),
+                'raw_payload' => ['destino' => ['departamento' => 'La Paz']],
+            ]);
+        }
+        PostalPackage::create([
+            'source' => 'siop',
+            'scope' => 'nacional',
+            'external_id' => 'unlimited-modal-other-department',
+            'tracking_number' => 'NA9999999999',
+            'phone' => '+59170001999',
+            'recipient' => 'Otro departamento',
+            'current_event' => 'En camino',
+            'updated_at_api' => now(),
+            'raw_payload' => ['destino' => ['departamento' => 'Tarija']],
+        ]);
+
+        Livewire::test(PostalCampaignManager::class, [
+            'scope' => 'nacional',
+            'modalMode' => true,
+        ])
+            ->assertDontSee('Cantidad máxima')
+            ->set('testMode', false)
+            ->set('destinationDepartment', 'La Paz')
+            ->set('campaignName', 'Campaña sin máximo por departamento')
+            ->call('prepareCampaign')
+            ->assertHasNoErrors()
+            ->assertDispatched('campaign-created');
+
+        $campaign = PostalCampaign::where('name', 'Campaña sin máximo por departamento')->firstOrFail();
+        $this->assertSame(51, $campaign->total);
+        $this->assertSame('sending', $campaign->status);
+        $this->assertSame(51, $campaign->messages()->count());
+        $this->assertSame(
+            51,
+            $campaign->messages()->whereHas('package', function ($query): void {
+                $query->whereRaw("json_extract(raw_payload, '$.destino.departamento') = ?", ['La Paz']);
+            })->count(),
+        );
     }
 
     public function test_campaign_registry_displays_the_selected_date_range(): void
@@ -176,7 +355,7 @@ class PostalCampaignCreationTest extends TestCase
             ->assertSee(now()->subDays(2)->format('d/m/Y').' - '.now()->subDay()->format('d/m/Y'));
     }
 
-    public function test_modal_updates_editable_maximum_to_the_selected_event_count(): void
+    public function test_modal_does_not_allow_changing_the_number_of_selected_packages(): void
     {
         $this->actingAs(User::factory()->create());
 
@@ -208,8 +387,9 @@ class PostalCampaignCreationTest extends TestCase
             ->call('filterByEvent', 'En Camino')
             ->assertSet('limit', 2)
             ->assertSee('Camino (2)')
+            ->assertDontSee('Cantidad máxima')
             ->set('limit', 1)
-            ->assertSet('limit', 1);
+            ->assertSet('limit', 2);
     }
 
     public function test_national_and_international_modals_use_the_full_event_count_above_one_thousand(): void
@@ -241,7 +421,7 @@ class PostalCampaignCreationTest extends TestCase
 
         foreach ([
             ['scope' => 'nacional', 'event' => 'En Camino', 'buttonLabel' => 'Camino'],
-            ['scope' => 'internacional', 'event' => 'Aduana', 'buttonLabel' => 'Aduana'],
+            ['scope' => 'internacional', 'event' => '', 'buttonLabel' => 'Todos'],
         ] as $campaign) {
             Livewire::test(PostalCampaignManager::class, [
                 'scope' => $campaign['scope'],
@@ -251,8 +431,66 @@ class PostalCampaignCreationTest extends TestCase
                 ->set('eventFilter', $campaign['event'])
                 ->assertSet('limit', 1005)
                 ->assertSee($campaign['buttonLabel'].' (1005)')
-                ->assertSee('max="1005"', false);
+                ->assertDontSee('Cantidad máxima');
         }
+    }
+
+    public function test_international_campaign_modal_filters_courier_and_pickup_events(): void
+    {
+        $this->actingAs(User::factory()->create());
+
+        foreach ([
+            ['tracking' => 'RR123456701', 'event' => 'Ventanilla'],
+            ['tracking' => 'RR123456702', 'event' => 'En aduana'],
+            ['tracking' => 'RR123456703', 'event' => 'Salida de Bolivia'],
+            ['tracking' => 'RR123456704', 'event' => 'Entregado'],
+            ['tracking' => 'RR123456705', 'event' => 'En reparto por cartero'],
+        ] as $index => $package) {
+            PostalPackage::create([
+                'source' => 'sitra',
+                'scope' => 'internacional',
+                'external_id' => 'international-modal-filter-'.$index,
+                'tracking_number' => $package['tracking'],
+                'phone' => '+5917999100'.$index,
+                'recipient' => 'Destinatario '.$index,
+                'current_event' => $package['event'],
+                'updated_at_api' => now(),
+            ]);
+        }
+
+        $creator = Livewire::test(PostalCampaignManager::class, [
+            'scope' => 'internacional',
+            'modalMode' => true,
+        ])
+            ->set('testMode', false)
+            ->assertSee('Todos (5)')
+            ->assertSee('Ventanilla (1)')
+            ->assertSee('Cartero (1)')
+            ->assertDontSee('Internacional (')
+            ->assertDontSee('Otros (')
+            ->assertDontSee('Aduana (')
+            ->assertDontSee('Salida de Bolivia (')
+            ->assertDontSee('Entregado (')
+            ->set('eventFilter', 'Ventanilla')
+            ->assertSet('limit', 1)
+            ->assertSet('selectedEvents', ['Ventanilla'])
+            ->assertSee('1 paquetes en Ventanilla para el rango seleccionado')
+            ->assertSet('availablePackageCount', 1);
+        $this->assertSame(
+            ['RR123456701'],
+            $creator->instance()->getPackagesProperty()->getCollection()->pluck('tracking_number')->all(),
+        );
+
+        $creator
+            ->set('eventFilter', 'Cartero')
+            ->assertSet('limit', 1)
+            ->assertSet('selectedEvents', ['Cartero'])
+            ->assertSet('availablePackageCount', 1)
+            ->assertSee('1 paquetes en Cartero para el rango seleccionado');
+        $this->assertSame(
+            ['RR123456705'],
+            $creator->instance()->getPackagesProperty()->getCollection()->pluck('tracking_number')->all(),
+        );
     }
 
     public function test_modal_event_counts_include_all_packages_even_when_test_mode_is_enabled(): void
@@ -282,7 +520,7 @@ class PostalCampaignCreationTest extends TestCase
             ->assertSee('Camino (2)')
             ->set('eventFilter', 'En Camino')
             ->assertSet('limit', 2)
-            ->assertSee('2 paquetes en En Camino para el rango seleccionado');
+            ->assertSee('2 paquetes en Camino para el rango seleccionado');
     }
 
     public function test_modal_event_dropdown_only_counts_packages_with_phone_inside_selected_dates(): void
@@ -324,7 +562,63 @@ class PostalCampaignCreationTest extends TestCase
             ->assertSee('1 paquetes en En Camino para el rango seleccionado');
     }
 
-    public function test_international_modal_filters_all_packages_by_event_and_selected_dates(): void
+    public function test_campaign_department_filters_apply_origin_and_destination_together(): void
+    {
+        $this->actingAs(User::factory()->create());
+        Queue::fake();
+
+        $packages = [
+            ['tracking' => 'NA123456811', 'origin' => 'La Paz', 'destination' => 'Santa Cruz'],
+            ['tracking' => 'NA123456812', 'origin' => 'La Paz', 'destination' => 'Tarija'],
+            ['tracking' => 'NA123456813', 'origin' => 'Cochabamba', 'destination' => 'Santa Cruz'],
+            ['tracking' => 'NA123456814', 'origin' => null, 'destination' => null],
+        ];
+
+        foreach ($packages as $index => $package) {
+            PostalPackage::create([
+                'source' => 'siop',
+                'scope' => 'nacional',
+                'external_id' => 'department-filter-package-'.$index,
+                'tracking_number' => $package['tracking'],
+                'phone' => '+5917999300'.$index,
+                'recipient' => 'Destinatario '.$index,
+                'current_event' => 'En camino',
+                'updated_at_api' => now()->subDay(),
+                'raw_payload' => [
+                    'origen' => $package['origin'] ? ['departamento' => $package['origin']] : [],
+                    'destino' => $package['destination'] ? ['departamento' => $package['destination']] : [],
+                ],
+            ]);
+        }
+
+        $creator = Livewire::test(PostalCampaignManager::class, [
+            'scope' => 'nacional',
+            'modalMode' => true,
+        ])
+            ->set('testMode', false)
+            ->assertSet('availablePackageCount', 4)
+            ->set('originDepartment', 'La Paz')
+            ->assertSet('availablePackageCount', 2)
+            ->set('destinationDepartment', 'Santa Cruz')
+            ->assertSet('availablePackageCount', 1)
+            ->set('campaignName', 'Campaña por departamento')
+            ->call('prepareCampaign')
+            ->assertDispatched('campaign-created');
+
+        $campaign = PostalCampaign::where('name', 'Campaña por departamento')->firstOrFail();
+        $this->assertSame('La Paz', $campaign->filters['origin_department']);
+        $this->assertSame('Santa Cruz', $campaign->filters['destination_department']);
+        $this->assertSame(
+            ['NA123456811'],
+            $campaign->messages()->with('package')->get()->pluck('package.tracking_number')->all(),
+        );
+        Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->assertSee('Departamentos')
+            ->assertSee('Origen: La Paz')
+            ->assertSee('Destino: Santa Cruz');
+    }
+
+    public function test_international_modal_filters_courier_packages_by_event_and_selected_dates(): void
     {
         $this->actingAs(User::factory()->create());
         Queue::fake();
@@ -332,10 +626,10 @@ class PostalCampaignCreationTest extends TestCase
         $trackings = ['RR123456801XX', 'RR123456802XX', 'RR123456803XX', 'RR123456804XX'];
         $includedTrackings = array_slice($trackings, 0, 2);
         $packages = [
-            ['event' => 'En aduana', 'date' => now()->subDays(2)],
-            ['event' => 'En aduana', 'date' => now()->subDay()],
-            ['event' => 'En aduana', 'date' => now()->subDays(6)],
-            ['event' => 'Llegada a Bolivia', 'date' => now()->subDay()],
+            ['event' => 'En reparto por cartero', 'date' => now()->subDays(2)],
+            ['event' => 'En reparto por cartero', 'date' => now()->subDay()],
+            ['event' => 'En reparto por cartero', 'date' => now()->subDays(6)],
+            ['event' => 'Disponible en ventanilla', 'date' => now()->subDay()],
         ];
 
         foreach ($packages as $index => $package) {
@@ -357,14 +651,15 @@ class PostalCampaignCreationTest extends TestCase
         ])
             ->assertSee('Eventos internacionales')
             ->assertDontSee('Eventos nacionales')
-            ->assertSee('Aduana (3)')
+            ->assertSee('Cartero (3)')
+            ->assertSee('Ventanilla (1)')
             ->set('from', now()->subDays(3)->toDateString())
             ->set('to', now()->toDateString())
             ->assertSee('Todos (3)')
-            ->assertSee('Aduana (2)')
-            ->call('filterByEvent', 'Aduana')
+            ->assertSee('Cartero (2)')
+            ->call('filterByEvent', 'Cartero')
             ->assertSet('limit', 2)
-            ->assertSee('2 paquetes en Aduana para el rango seleccionado')
+            ->assertSee('2 paquetes en Cartero para el rango seleccionado')
             ->set('campaignName', 'Campaña internacional por evento y fechas')
             ->call('prepareCampaign')
             ->assertDispatched('campaign-created');
@@ -472,7 +767,7 @@ class PostalCampaignCreationTest extends TestCase
             ->assertSee('Camino (2)')
             ->set('eventFilter', 'En Camino')
             ->assertSet('limit', 2)
-            ->assertSee('2 paquetes en En Camino para el rango seleccionado')
+            ->assertSee('2 paquetes en Camino para el rango seleccionado')
             ->set('limit', 20)
             ->assertSet('limit', 2)
             ->set('campaignName', 'Campaña por evento y fechas')
@@ -963,7 +1258,9 @@ class PostalCampaignCreationTest extends TestCase
         }
 
         $component = Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
-            ->assertSee('registry-progress-trigger', false)
+            ->assertSee('wire:click="openCampaignInfo('.$campaign->id.')"', false)
+            ->assertSee('wire:keydown.enter="openCampaignInfo('.$campaign->id.')"', false)
+            ->assertSee('x-on:click.stop x-on:keydown.stop', false)
             ->call('openCampaignInfo', $campaign->id)
             ->assertSee('registryCampaignInfo')
             ->assertDontSee($message->package->tracking_number)
@@ -1024,8 +1321,182 @@ class PostalCampaignCreationTest extends TestCase
 
         Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
             ->call('openCampaignInfo', $campaign->id)
-            ->assertSee('No se pudo enviar')
+            ->assertSee('Error al enviar')
             ->assertSee('WhatsApp rechazó el mensaje.');
+    }
+
+    public function test_campaign_message_row_shows_delivery_and_reply_status_and_opens_its_chat(): void
+    {
+        [$campaign, $campaignMessage] = $this->createPreparedCampaign('nacional', false);
+        $campaignMessage->update([
+            'status' => 'delivered',
+            'sent_at' => now()->subMinute(),
+        ]);
+        WhatsAppMessage::create([
+            'provider_message_id' => 'wamid.campaign.modal.reply',
+            'phone' => $campaignMessage->phone,
+            'contact_name' => 'Destinatario de prueba',
+            'direction' => 'inbound',
+            'message_type' => 'text',
+            'message' => 'Ya recibí la información, gracias.',
+            'status' => 'received',
+            'received_at' => now(),
+        ]);
+
+        Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->call('openCampaignInfo', $campaign->id)
+            ->assertSee('Entregado')
+            ->assertSee('Sí · Respondió')
+            ->assertSee('wire:click="openCampaignChat('.$campaignMessage->id.')"', false)
+            ->call('openCampaignChat', $campaignMessage->id)
+            ->assertRedirect(route('chat', ['campaign_message' => $campaignMessage->id]));
+
+        $this->get(route('chat', ['campaign_message' => $campaignMessage->id]))
+            ->assertOk()
+            ->assertSee('Hola Destinatario de prueba, guía NA123456789')
+            ->assertSee('Ya recibí la información, gracias.')
+            ->assertSee('Entregado')
+            ->assertSee('data-selected-campaign-message-id="'.$campaignMessage->id.'"', false)
+            ->assertSee('data-campaign-message-id="'.$campaignMessage->id.'"', false)
+            ->assertSee('campaign-message-focused', false)
+            ->assertSee('scrollIntoView({ block: \'center\' })', false);
+    }
+
+    public function test_campaign_details_refresh_reply_status_when_a_new_reply_arrives(): void
+    {
+        [$campaign, $campaignMessage] = $this->createPreparedCampaign('nacional', false);
+        $campaignMessage->update([
+            'status' => 'delivered',
+            'sent_at' => now()->subMinute(),
+        ]);
+
+        $details = Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->call('openCampaignInfo', $campaign->id)
+            ->assertSee('wire:poll.2s', false)
+            ->assertSee('class="registry-no-reply">No</span>', false);
+
+        WhatsAppMessage::create([
+            'provider_message_id' => 'wamid.campaign.modal.reply.after-open',
+            'phone' => $campaignMessage->phone,
+            'contact_name' => 'Destinatario de prueba',
+            'direction' => 'inbound',
+            'message_type' => 'text',
+            'message' => 'Ya respondí.',
+            'status' => 'received',
+            'received_at' => now(),
+        ]);
+
+        $details
+            ->call('nextInfoPage')
+            ->assertSee('Sí · Respondió');
+    }
+
+    public function test_failed_campaign_message_shows_the_send_error_status(): void
+    {
+        [$campaign, $message] = $this->createPreparedCampaign('nacional', false);
+        $message->update(['status' => 'failed', 'error_message' => 'Número inválido']);
+
+        Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->call('openCampaignInfo', $campaign->id)
+            ->assertSee('Error al enviar')
+            ->assertSee('Número inválido')
+            ->assertSee('No');
+    }
+
+    public function test_campaign_message_details_are_paginated_ten_per_page(): void
+    {
+        [$campaign, $firstMessage] = $this->createPreparedCampaign('nacional', false);
+        $firstMessage->update(['status' => 'sent']);
+
+        for ($index = 2; $index <= 12; $index++) {
+            $package = PostalPackage::create([
+                'source' => 'siop',
+                'scope' => 'nacional',
+                'external_id' => 'paged-campaign-package-'.$index,
+                'tracking_number' => 'NAPAGE'.str_pad((string) $index, 3, '0', STR_PAD_LEFT),
+                'phone' => '+591700000'.str_pad((string) $index, 2, '0', STR_PAD_LEFT),
+            ]);
+            $campaign->messages()->create([
+                'postal_package_id' => $package->id,
+                'phone' => $package->phone,
+                'message' => 'Mensaje paginado '.$index,
+                'status' => 'sent',
+            ]);
+        }
+        $campaign->update(['total' => 12, 'sent' => 12, 'pending' => 0, 'status' => 'sent']);
+
+        Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->call('openCampaignInfo', $campaign->id)
+            ->assertSee('Mostrando 1–10 de 12 mensajes')
+            ->assertSee('Mensaje paginado 10')
+            ->assertDontSee('Mensaje paginado 11')
+            ->call('nextInfoPage')
+            ->assertSet('infoPage', 2)
+            ->assertSee('Mostrando 11–12 de 12 mensajes')
+            ->assertSee('Mensaje paginado 11')
+            ->assertSee('Mensaje paginado 12')
+            ->assertDontSee('Mensaje paginado 10')
+            ->call('previousInfoPage')
+            ->assertSet('infoPage', 1)
+            ->assertSee('Mensaje paginado 10');
+    }
+
+    public function test_campaign_details_search_and_status_cards_filter_messages(): void
+    {
+        [$campaign, $firstMessage] = $this->createPreparedCampaign('nacional', false);
+        $firstMessage->update(['status' => 'delivered']);
+
+        foreach ([
+            ['tracking' => 'NAFILTERPEND001', 'phone' => '+591 71234567', 'status' => 'pending'],
+            ['tracking' => 'NAFILTERFAIL001', 'phone' => '+591 71234568', 'status' => 'failed'],
+            ['tracking' => 'NAFILTERREAD001', 'phone' => '+591 71234569', 'status' => 'read'],
+        ] as $index => $messageData) {
+            $package = PostalPackage::create([
+                'source' => 'siop',
+                'scope' => 'nacional',
+                'external_id' => 'search-filter-package-'.$index,
+                'tracking_number' => $messageData['tracking'],
+                'phone' => $messageData['phone'],
+            ]);
+            $campaign->messages()->create([
+                'postal_package_id' => $package->id,
+                'phone' => $messageData['phone'],
+                'message' => 'Mensaje '.$messageData['tracking'],
+                'status' => $messageData['status'],
+                'error_message' => $messageData['status'] === 'failed' ? 'Número inválido' : null,
+            ]);
+        }
+        $campaign->update(['total' => 4, 'sent' => 2, 'pending' => 1, 'failed' => 1]);
+
+        $details = Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->call('openCampaignInfo', $campaign->id)
+            ->assertSee('aria-label="Buscar por número de paquete o celular"', false)
+            ->assertSee('Mostrando 1–4 de 4 mensajes')
+            ->set('infoSearch', 'NAFILTERFAIL001')
+            ->assertSee('NAFILTERFAIL001')
+            ->assertDontSee('NAFILTERPEND001')
+            ->assertSee('Mostrando 1–1 de 1 mensajes')
+            ->set('infoSearch', '71234567')
+            ->assertSee('NAFILTERPEND001')
+            ->assertDontSee('NAFILTERFAIL001')
+            ->set('infoSearch', '')
+            ->call('filterInfoStatus', 'failed')
+            ->assertSee('NAFILTERFAIL001')
+            ->assertDontSee('NAFILTERPEND001')
+            ->assertSee('Mostrando 1–1 de 1 mensajes')
+            ->call('filterInfoStatus', 'failed')
+            ->assertSee('NAFILTERPEND001')
+            ->assertSee('NAFILTERREAD001')
+            ->assertSee('Mostrando 1–4 de 4 mensajes')
+            ->call('filterInfoStatus', 'pending')
+            ->assertSee('NAFILTERPEND001')
+            ->assertDontSee('NAFILTERFAIL001')
+            ->call('filterInfoStatus', 'sent')
+            ->assertSee('NA123456789')
+            ->assertSee('NAFILTERREAD001')
+            ->assertDontSee('NAFILTERPEND001')
+            ->assertDontSee('NAFILTERFAIL001')
+            ->assertSee('Mostrando 1–2 de 2 mensajes');
     }
 
     public function test_campaign_messages_are_spread_over_the_configured_duration(): void
@@ -1228,18 +1699,118 @@ class PostalCampaignCreationTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_campaign_registry_deletes_campaign_and_cascades_its_messages(): void
+    public function test_campaign_registry_hides_delete_action_and_soft_deleted_campaigns(): void
     {
         [$campaign, $message] = $this->createPreparedCampaign('nacional', false);
 
         Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
-            ->assertSee('Eliminar')
-            ->call('deleteCampaign', $campaign->id)
-            ->assertSee('Campaña y mensajes asociados eliminados.')
-            ->assertDontSee('Campaña preparada');
+            ->assertDontSee('Eliminar')
+            ->assertDontSee('value="deleted"', false)
+            ->assertSee('Preparada')
+            ->assertSee($campaign->name);
 
-        $this->assertDatabaseMissing('postal_campaigns', ['id' => $campaign->id]);
-        $this->assertDatabaseMissing('postal_campaign_messages', ['id' => $message->id]);
+        $campaign->delete();
+        Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->assertDontSee($campaign->name)
+            ->assertSee('Aún no hay campañas registradas.');
+
+        $this->assertDatabaseHas('postal_campaign_messages', ['id' => $message->id]);
+    }
+
+    public function test_campaign_registry_filters_campaigns_by_name_status_and_dates(): void
+    {
+        [$campaign] = $this->createPreparedCampaign('nacional', false);
+        $campaign->update([
+            'name' => 'Campaña Enero',
+            'filters' => ['scope' => 'nacional', 'from' => '2026-01-01', 'to' => '2026-01-31'],
+        ]);
+        DB::table('postal_campaigns')->where('id', $campaign->id)->update(['created_at' => '2026-01-10 12:00:00']);
+        $otherCampaign = PostalCampaign::create([
+            'user_id' => $campaign->user_id,
+            'name' => 'Campaña Febrero',
+            'filters' => ['scope' => 'nacional', 'from' => '2026-02-01', 'to' => '2026-02-28'],
+            'template' => 'Mensaje de prueba',
+            'status' => 'sent',
+            'total' => 1,
+            'sent' => 1,
+        ]);
+        DB::table('postal_campaigns')->where('id', $otherCampaign->id)->update(['created_at' => '2026-02-10 12:00:00']);
+
+        $component = Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->assertSee('Campaña Enero')
+            ->assertSee('Campaña Febrero')
+            ->set('campaignSearch', 'Enero')
+            ->assertSee('Campaña Enero')
+            ->assertDontSee('Campaña Febrero')
+            ->set('campaignSearch', '')
+            ->set('campaignStatus', 'sent')
+            ->assertSee('Campaña Febrero')
+            ->assertDontSee('Campaña Enero')
+            ->set('campaignStatus', '')
+            ->set('campaignPeriodFrom', '2026-01-01')
+            ->set('campaignPeriodTo', '2026-01-31')
+            ->set('campaignCreatedFrom', '2026-01-10')
+            ->set('campaignCreatedTo', '2026-01-10')
+            ->assertSee('Campaña Enero')
+            ->assertDontSee('Campaña Febrero')
+            ->call('clearCampaignFilters')
+            ->assertSee('Campaña Enero')
+            ->assertSee('Campaña Febrero');
+
+        $this->assertDatabaseHas('postal_campaigns', ['id' => $otherCampaign->id]);
+    }
+
+    public function test_campaign_registry_paginates_five_campaigns_and_resets_page_when_filtering(): void
+    {
+        $user = User::factory()->create();
+        $this->actingAs($user);
+
+        for ($index = 1; $index <= 6; $index++) {
+            $campaign = PostalCampaign::create([
+                'user_id' => $user->id,
+                'name' => "Campaña paginada {$index}",
+                'filters' => ['scope' => 'nacional'],
+                'events' => [],
+                'template' => 'Mensaje de prueba',
+                'status' => 'prepared',
+                'total' => $index,
+                'pending' => $index,
+            ]);
+            DB::table('postal_campaigns')
+                ->where('id', $campaign->id)
+                ->update(['created_at' => now()->addSeconds($index)]);
+        }
+
+        $component = Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->assertSee('Mostrando 1–5 de 6 campañas')
+            ->assertSee('Campaña paginada 2')
+            ->assertSee('Campaña paginada 6')
+            ->assertDontSee('Campaña paginada 1')
+            ->call('nextPage', 'campaignPage')
+            ->assertSee('Mostrando 6–6 de 6 campañas')
+            ->assertSee('Campaña paginada 1')
+            ->assertDontSee('Campaña paginada 2')
+            ->set('campaignSearch', 'Campaña paginada 1')
+            ->assertSee('Mostrando 1–1 de 1 campañas')
+            ->assertSee('Campaña paginada 1')
+            ->assertDontSee('Campaña paginada 6');
+
+        $this->assertSame(1, $component->get('paginators')['campaignPage']);
+    }
+
+    public function test_soft_deleted_campaign_remains_openable_and_its_messages_keep_campaign_relation(): void
+    {
+        [$campaign, $message] = $this->createPreparedCampaign('nacional', false);
+        $message->update(['status' => 'sent']);
+        $campaign->update(['status' => 'deleted']);
+        $campaign->delete();
+
+        Livewire::test(PostalCampaignRegistry::class, ['scope' => 'nacional'])
+            ->call('openCampaignInfo', $campaign->id)
+            ->assertSee('Campaña preparada')
+            ->assertSee($message->message);
+
+        $this->assertSame('Campaña preparada', $message->fresh()->campaign->name);
     }
 
     private function assertCampaignCanBeCreated(string $scope, array $phoneFields): void

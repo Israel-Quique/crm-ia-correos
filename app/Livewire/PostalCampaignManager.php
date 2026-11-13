@@ -6,6 +6,7 @@ use App\Models\PostalPackage;
 use App\Models\PostalCampaign;
 use App\Models\PostalCampaignTemplate;
 use App\Services\WhatsAppTestNumberRegistry;
+use App\Services\PostalApiSyncService;
 use Livewire\Component;
 use Livewire\WithPagination;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -16,17 +17,24 @@ class PostalCampaignManager extends Component
     use WithPagination;
     private ?Collection $basePackages = null;
     private ?Collection $filteredPackages = null;
-    private ?array $eventSummaryCache = null;
+    // Debe ser público para que Livewire lo conserve entre peticiones.
+    public array $eventSummaryCache = [];
     public string $phoneFilter = 'all';
+    public string $originDepartment = '';
+    public string $destinationDepartment = '';
     public bool $filtersApplied = false;
     public ?string $cdsSyncNotice = null;
     public bool $modalMode = false;
     public array $selectedEvents=[]; public string $eventFilter=''; public string $scope='nacional'; public string $source='all'; public string $from=''; public string $to=''; public int $limit=50; public string $campaignName='Campana postal'; public int $intervalSeconds=30; public bool $testMode=true; public string $template='Hola {recipient}, tu paquete {tracking_number} esta en estado {current_event}.'; public ?int $editingCampaignId=null; public string $editingCampaignName='';
+    public string $campaignType = 'operativa';
+
     public function mount(string $scope='nacional', bool $modalMode = false): void
     {
         $this->scope = in_array($scope, ['nacional', 'internacional'], true) ? $scope : 'nacional';
         $this->source = $this->scope === 'nacional' ? 'siop' : 'sitra';
         $this->modalMode = $modalMode;
+        $this->from = now()->startOfMonth()->format('Y-m-d');
+        $this->to = now()->format('Y-m-d');
         if ($this->modalMode) {
             $this->testMode = false;
         }
@@ -34,7 +42,7 @@ class PostalCampaignManager extends Component
 
     public function updating($field): void
     {
-        if (in_array($field, ['source', 'from', 'to', 'limit', 'phoneFilter', 'eventFilter', 'testMode'], true)) {
+        if (in_array($field, ['source', 'from', 'to', 'limit', 'phoneFilter', 'testMode', 'originDepartment', 'destinationDepartment'], true)) {
             $this->resetPackageCache();
             $this->resetPage();
         }
@@ -42,7 +50,7 @@ class PostalCampaignManager extends Component
 
     public function updated($property): void
     {
-        if (! $this->modalMode || ! in_array($property, ['from', 'to', 'eventFilter', 'testMode', 'limit'], true)) {
+        if (! $this->modalMode || ! in_array($property, ['from', 'to', 'eventFilter', 'testMode', 'limit', 'originDepartment', 'destinationDepartment'], true)) {
             return;
         }
 
@@ -55,29 +63,35 @@ class PostalCampaignManager extends Component
 
         if ($property === 'eventFilter') {
             $this->selectedEvents = $this->eventFilter === '' ? [] : [$this->eventFilter];
+            $this->limit = $this->availablePackageCount;
         }
 
-        $available = $this->availablePackageCount;
-        $this->limit = $this->modalMode ? $available : min(1000, $available);
-
-        $this->applyFilters();
+        $this->applyFilters($property === 'eventFilter');
     }
 
-    private function resetPackageCache(): void
+    private function resetPackageCache(bool $resetSummary = true, bool $resetBase = true): void
     {
-        $this->basePackages = null;
+        if ($resetBase) {
+            $this->basePackages = null;
+        }
         $this->filteredPackages = null;
-        $this->eventSummaryCache = null;
+        if ($resetSummary) {
+            $this->eventSummaryCache = [];
+        }
     }
 
-    public function applyFilters(): void
+    public function applyFilters(bool $preserveSummary = false): void
     {
         $maxLimit = $this->modalMode ? $this->availablePackageCount : 1000;
-        $this->limit = min($maxLimit, max(0, (int) $this->limit));
+        $this->limit = $this->modalMode
+            ? $maxLimit
+            : min($maxLimit, max(0, (int) $this->limit));
         $this->selectedEvents = $this->eventFilter === '' ? [] : [$this->eventFilter];
         $this->filtersApplied = true;
         $this->cdsSyncNotice = null;
-        $this->resetPackageCache();
+        // El cambio de evento no modifica los conteos; conservar el resumen
+        // evita recorrer todos los paquetes nuevamente.
+        $this->resetPackageCache($preserveSummary, ! $preserveSummary);
         $this->resetPage();
 
         if ($this->scope === 'internacional') {
@@ -96,12 +110,70 @@ class PostalCampaignManager extends Component
     }
     public function updatedLimit($value): void
     {
-        $maxLimit = $this->modalMode ? $this->availablePackageCount : 1000;
-        $this->limit = min($maxLimit, max($this->modalMode ? 0 : 1, (int) $value));
+        if ($this->modalMode) {
+            $this->limit = $this->availablePackageCount;
+        } else {
+            $this->limit = min(1000, max(1, (int) $value));
+        }
         $this->resetPage();
     }
     public function updatedIntervalSeconds($value): void { $this->intervalSeconds = max(30, (int) $value); }
-    public function clearFilters(): void { $this->selectedEvents=[]; $this->eventFilter=''; $this->phoneFilter='all'; $this->from=''; $this->to=''; $this->limit=50; $this->filtersApplied=false; $this->cdsSyncNotice=null; $this->resetPackageCache(); $this->resetPage(); }
+
+    public function campaignStatusLabel(string $status): string
+    {
+        return match ($status) {
+            'prepared' => 'Preparada',
+            'sending' => 'Enviando',
+            'paused' => 'Pausada',
+            'partial' => 'Parcial',
+            'sent' => 'Enviada',
+            'failed' => 'Fallida',
+            'cancelled' => 'Cancelada',
+            'completed' => 'Completada',
+            'draft' => 'Borrador',
+            default => 'Estado no identificado',
+        };
+    }
+
+    public function messageStatusLabel(string $status): string
+    {
+        return match ($status) {
+            'sent' => 'Enviado',
+            'delivered' => 'Entregado',
+            'read' => 'Visto',
+            'failed' => 'Error al enviar',
+            'sending' => 'Enviando',
+            'pending' => 'Pendiente',
+            'replied' => 'Respondió',
+            'cancelled' => 'Cancelado',
+            'received' => 'Recibido',
+            default => 'Estado no identificado',
+        };
+    }
+
+    public function clearFilters(): void { $this->selectedEvents=[]; $this->eventFilter=''; $this->phoneFilter='all'; $this->originDepartment=''; $this->destinationDepartment=''; $this->from=now()->startOfMonth()->format('Y-m-d'); $this->to=now()->format('Y-m-d'); $this->limit=50; $this->filtersApplied=false; $this->cdsSyncNotice=null; $this->resetPackageCache(); $this->resetPage(); }
+    public function syncNow(PostalApiSyncService $sync): void
+    {
+        try {
+            $result = $sync->sync($this->scope, 1);
+            $this->resetPackageCache();
+            $this->cdsSyncNotice = 'Sincronización completada: '.($result['packages'] ?? $result['count'] ?? 0).' paquetes procesados.';
+        } catch (\Throwable $e) {
+            report($e);
+            $this->cdsSyncNotice = 'No se pudo completar la sincronización: '.$e->getMessage();
+        }
+    }
+
+    public function getLatestSyncAtProperty(): ?\Illuminate\Support\Carbon
+    {
+        $latestSyncAt = PostalPackage::query()
+            ->where('scope', $this->scope)
+            ->where('source', $this->source)
+            ->max('last_synced_at');
+
+        return $latestSyncAt ? \Illuminate\Support\Carbon::parse($latestSyncAt) : null;
+    }
+
     public function displayRecipient(PostalPackage $package): string
     {
         return $this->firstValue($package, ['cds_recipient', 'recipient', 'raw_payload.declaracion_cds.objetos.0.declaraciones.0.destinatario_declarado.nombre', 'raw_payload.declaracion_cds.objetos.0.declaraciones.0.campos.RNm', 'raw_payload.destinatario.nombre']);
@@ -145,18 +217,16 @@ class PostalCampaignManager extends Component
     {
         $this->eventFilter = $this->selectedEvents === [$event] ? '' : $event;
         $this->selectedEvents = $this->eventFilter === '' ? [] : [$this->eventFilter];
-        if ($this->modalMode) {
-            $this->limit = $this->availablePackageCount;
-        }
-        $this->applyFilters();
+        $this->limit = $this->availablePackageCount;
+        $this->applyFilters(true);
     }
     private function packageQuery()
     {
         $driver = \Illuminate\Support\Facades\DB::connection()->getDriverName();
         $phoneCondition = match ($driver) {
-            'sqlite' => "coalesce(%s, '') glob '*[0-9]*'",
-            'mysql', 'mariadb' => "coalesce(%s, '') regexp '[0-9]'",
-            default => "coalesce(%s, '') ~ '[0-9]'",
+            'sqlite' => "length(trim(coalesce(%s, ''))) >= 7 AND coalesce(%s, '') glob '*[0-9]*'",
+            'mysql', 'mariadb' => "length(trim(coalesce(%s, ''))) >= 7 AND coalesce(%s, '') regexp '[0-9]'",
+            default => "length(trim(coalesce(%s, ''))) >= 7 AND coalesce(%s, '') ~ '[0-9]'",
         };
         $jsonPhoneExpressions = $this->jsonPhoneExpressions();
         if ($this->scope === 'nacional') $jsonPhoneExpressions = array_values(array_filter($jsonPhoneExpressions, fn (string $expression): bool => ! str_contains($expression, 'declaracion_cds')));
@@ -166,12 +236,12 @@ class PostalCampaignManager extends Component
             ->whereNotNull('tracking_number')
             ->whereRaw("trim(tracking_number) <> ''")
             ->where(function ($phoneQuery) use ($phoneCondition, $jsonPhoneExpressions) {
-                $phoneQuery->whereRaw(sprintf($phoneCondition, 'phone'));
+                $phoneQuery->whereRaw(sprintf($phoneCondition, 'phone', 'phone'));
                 if ($this->scope === 'internacional') {
-                    $phoneQuery->orWhereRaw(sprintf($phoneCondition, 'cds_phone'));
+                    $phoneQuery->orWhereRaw(sprintf($phoneCondition, 'cds_phone', 'cds_phone'));
                 }
                 foreach ($jsonPhoneExpressions as $expression) {
-                    $phoneQuery->orWhereRaw(sprintf($phoneCondition, $expression));
+                    $phoneQuery->orWhereRaw(sprintf($phoneCondition, $expression, $expression));
                 }
             });
 
@@ -184,6 +254,82 @@ class PostalCampaignManager extends Component
         }
 
         return $q;
+    }
+
+    private function departmentPayloadPaths(): array
+    {
+        return [
+            'origin' => [
+                'departamento_origen', 'origin_department', 'originDepartment',
+                'origen', 'origen.departamento', 'origen.departamento.nombre', 'origen.departamento_nombre', 'origen.nombre_departamento', 'origen.nombre',
+                'origin.department', 'origin.department.name',
+                'remitente.departamento', 'remitente.departamento.nombre', 'remitente.departamento_nombre',
+                'remitente.direccion.departamento', 'remitente.localidad.departamento', 'remitente.ciudad',
+                'oficina_origen.departamento', 'oficina_origen.departamento.nombre', 'oficina_origen.nombre',
+                'sucursal_origen.departamento', 'sucursal_origen.nombre', 'direccion_origen.departamento',
+                'remitente_declarado.departamento', 'declaracion_cds.objetos.0.declaraciones.0.remitente_declarado.departamento',
+            ],
+            'destination' => [
+                'departamento_destino', 'destination_department', 'destinationDepartment',
+                'destino', 'destino.departamento', 'destino.departamento.nombre', 'destino.departamento_nombre', 'destino.nombre_departamento',
+                'destination.department', 'destination.department.name',
+                'destinatario.departamento', 'destinatario.departamento.nombre', 'destinatario.departamento_nombre',
+                'destinatario.direccion.departamento', 'destinatario.localidad.departamento', 'destinatario.ciudad',
+                'oficina_destino.departamento', 'oficina_destino.departamento.nombre', 'oficina_destino.nombre',
+                'sucursal_destino.departamento', 'sucursal_destino.nombre', 'direccion_destino.departamento',
+                'destinatario_declarado.departamento', 'declaracion_cds.objetos.0.declaraciones.0.destinatario_declarado.departamento',
+            ],
+        ];
+    }
+
+    private function jsonTextExpression(string $path): string
+    {
+        $driver = \Illuminate\Support\Facades\DB::connection()->getDriverName();
+        if ($driver === 'pgsql') {
+            return "raw_payload #>> '{".str_replace('.', ',', $path)."}'";
+        }
+
+        $jsonPath = '$.'.str_replace('.0.', '[0].', $path);
+        return in_array($driver, ['mysql', 'mariadb'], true)
+            ? "JSON_UNQUOTE(JSON_EXTRACT(raw_payload, '{$jsonPath}'))"
+            : "json_extract(raw_payload, '{$jsonPath}')";
+    }
+
+    private function departmentForPackage(PostalPackage $package, string $kind): string
+    {
+        $paths = $this->departmentPayloadPaths()[$kind];
+        foreach ($paths as $index => $path) {
+            $department = $this->matchDepartment((string) $package->getAttribute("{$kind}_department_{$index}"));
+            if ($department !== '') {
+                return $department;
+            }
+        }
+
+        if ($kind === 'destination') {
+            return $this->matchDepartment((string) $package->destination_branch);
+        }
+
+        return '';
+    }
+
+    private function matchDepartment(string $value): string
+    {
+        $value = mb_strtolower(trim($value), 'UTF-8');
+        $value = strtr($value, ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u']);
+        foreach ($this->departments() as $department) {
+            $normalized = mb_strtolower($department, 'UTF-8');
+            $normalized = strtr($normalized, ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u']);
+            if (preg_match('/(?<![a-z])'.preg_quote($normalized, '/').'(?![a-z])/u', $value)) {
+                return $department;
+            }
+        }
+
+        return '';
+    }
+
+    public function departments(): array
+    {
+        return ['Beni', 'Chuquisaca', 'Cochabamba', 'La Paz', 'Oruro', 'Pando', 'Potosí', 'Santa Cruz', 'Tarija'];
     }
 
     private function jsonPhoneExpressions(): array
@@ -227,7 +373,7 @@ class PostalCampaignManager extends Component
             return $this->basePackages;
         }
 
-        return $this->basePackages = $this->packageQuery()
+        $query = $this->packageQuery()
             ->select([
                 'id', 'source', 'scope', 'external_id', 'tracking_number', 'recipient',
                 'phone', 'cds_recipient', 'cds_phone', 'current_event', 'destination_branch',
@@ -238,8 +384,39 @@ class PostalCampaignManager extends Component
                 'postal_events.event_name', 'postal_events.event_at', 'postal_events.raw_payload',
             ])])
             ->orderByDesc('updated_at_api')
-            ->orderByDesc('id')
-            ->get();
+            ->orderByDesc('id');
+        $departmentPaths = $this->departmentPayloadPaths();
+        foreach ([
+            'origin' => $this->originDepartment,
+            'destination' => $this->destinationDepartment,
+        ] as $kind => $department) {
+            if ($department === '') {
+                continue;
+            }
+
+            $paths = $departmentPaths[$kind];
+            foreach ($paths as $index => $path) {
+                $query->addSelect(\Illuminate\Support\Facades\DB::raw(
+                    $this->jsonTextExpression($path)." as {$kind}_department_{$index}",
+                ));
+            }
+        }
+
+        return $this->basePackages = $query->get();
+    }
+
+    private function departmentFilteredPackages(): Collection
+    {
+        return $this->basePackageCollection()
+            ->filter(function (PostalPackage $package): bool {
+                $originMatches = $this->originDepartment === ''
+                    || $this->departmentForPackage($package, 'origin') === $this->originDepartment;
+                $destinationMatches = $this->destinationDepartment === ''
+                    || $this->departmentForPackage($package, 'destination') === $this->destinationDepartment;
+
+                return $originMatches && $destinationMatches;
+            })
+            ->values();
     }
 
     private function filteredPackageCollection(): Collection
@@ -248,9 +425,20 @@ class PostalCampaignManager extends Component
             return $this->filteredPackages;
         }
 
-        $items = $this->basePackageCollection();
+        $items = $this->departmentFilteredPackages();
         if ($this->selectedEvents) {
-            $items = $items->filter(fn ($package) => in_array($this->classifyPackage($package), $this->selectedEvents, true));
+            $items = $items->filter(function (PostalPackage $package): bool {
+                $classification = $this->classifyPackage($package);
+                if ($this->modalMode && $this->scope === 'internacional') {
+                    $classification = match ($classification) {
+                        'Ventanilla para recojo' => 'Ventanilla',
+                        'Cartero' => 'Cartero',
+                        default => 'Otros',
+                    };
+                }
+
+                return in_array($classification, $this->selectedEvents, true);
+            });
         }
 
         if ($this->testMode) {
@@ -262,7 +450,10 @@ class PostalCampaignManager extends Component
             });
         }
 
-        $items = $items->take(max(1, $this->limit))->values();
+        if (! $this->modalMode) {
+            $items = $items->take(max(1, $this->limit));
+        }
+        $items = $items->values();
         $this->loadRecipientPayloadFallbacks($items);
 
         return $this->filteredPackages = $items;
@@ -290,34 +481,43 @@ class PostalCampaignManager extends Component
             $package->setAttribute('raw_payload', $payloads->get($package->id));
         }
     }
-    public function getPackagesProperty(){ $perPage=15; $page=$this->getPage(); $max=max(1,$this->limit); $items=$this->filteredPackageCollection()->take($max)->values(); return new LengthAwarePaginator($items->forPage($page,$perPage)->values(),$items->count(),$perPage,$page,['path'=>request()->url(),'pageName'=>'page']); }
+    public function getPackagesProperty(){ $perPage=15; $page=$this->getPage(); $items=$this->filteredPackageCollection(); if (! $this->modalMode) $items=$items->take(max(1,$this->limit)); $items=$items->values(); return new LengthAwarePaginator($items->forPage($page,$perPage)->values(),$items->count(),$perPage,$page,['path'=>request()->url(),'pageName'=>'page']); }
     public function getEventSummaryProperty(): array
     {
-        if ($this->eventSummaryCache !== null) {
+        if ($this->eventSummaryCache !== []) {
             return $this->eventSummaryCache;
+        }
+
+        if ($this->modalMode && $this->scope === 'internacional') {
+            $ventanilla = 0;
+            $cartero = 0;
+            $other = 0;
+            foreach ($this->departmentFilteredPackages() as $package) {
+                match ($this->classifyPackage($package)) {
+                    'Ventanilla para recojo' => $ventanilla++,
+                    'Cartero' => $cartero++,
+                    default => $other++,
+                };
+            }
+
+            return $this->eventSummaryCache = [
+                'Ventanilla' => $ventanilla,
+                'Cartero' => $cartero,
+                'Otros' => $other,
+            ];
         }
 
         $labels = $this->scope === 'internacional'
             ? ['Llegada a Bolivia', 'Salida de Bolivia', 'Aduana', 'Distribución nacional', 'Última milla', 'Cartero', 'Ventanilla para recojo', 'Entregado', 'Importación detenida', 'Sin evento', 'Otros']
-            : ['Recibido Origen', 'En Camino', 'Recibido Destino', 'Cartero', 'Ventanilla para recojo', 'Entregado', 'Cancelado', 'Sin evento', 'Otros'];
+            : ['Recibido Origen', 'En Camino', 'Cartero', 'Ventanilla para recojo', 'Entregado', 'Sin evento', 'Otros'];
         $summary = array_fill_keys($labels, 0);
 
-        $this->packageQuery()
-            ->select([
-                'id', 'source', 'scope', 'external_id', 'tracking_number', 'recipient',
-                'phone', 'cds_recipient', 'cds_phone', 'current_event', 'destination_branch',
-                'updated_at_api', 'updated_at',
-            ])
-            ->with(['latestEvent' => fn ($query) => $query->select([
-                'postal_events.id', 'postal_events.postal_package_id', 'postal_events.source_event',
-                'postal_events.event_name', 'postal_events.event_at', 'postal_events.raw_payload',
-            ])])
-            ->chunkById(250, function (Collection $packages) use (&$summary): void {
-                foreach ($packages as $package) {
-                    $label = $this->classifyPackage($package);
-                    $summary[array_key_exists($label, $summary) ? $label : 'Otros']++;
-                }
-            });
+        // Reutilizar la colección que también usa el filtro evita ejecutar una
+        // segunda consulta completa al seleccionar un evento.
+        foreach ($this->departmentFilteredPackages() as $package) {
+            $label = $this->classifyPackage($package);
+            $summary[array_key_exists($label, $summary) ? $label : 'Otros']++;
+        }
 
         return $this->eventSummaryCache = $summary;
     }
@@ -328,6 +528,8 @@ class PostalCampaignManager extends Component
             'En Camino' => 'Camino',
             'Recibido Destino' => 'Llegó a destino',
             'Ventanilla para recojo' => 'Ventanilla',
+            'Ventanilla' => 'Ventanilla',
+            'Internacional' => 'Internacional',
         ][$event] ?? $event;
     }
     public function eventFilterColor(string $event): string
@@ -427,14 +629,14 @@ class PostalCampaignManager extends Component
             if (str_contains($value, 'cartero')) return 'Cartero';
             if (str_contains($value, 'entreg')) return 'Entregado';
             if (str_contains($value, 'despach') || str_contains($value, 'en camino') || str_contains($value, 'transit')) return 'En Camino';
-            if (str_contains($value, 'destino')) return 'Recibido Destino';
+            if (str_contains($value, 'destino')) return 'Ventanilla para recojo';
             if (str_contains($value, 'origen') || str_contains($value, 'recibid')) return 'Recibido Origen';
             if (str_contains($value, 'cancel')) return 'Cancelado';
         }
 
         return $event !== '' ? $event : 'Sin evento';
     }
-    public function getTotalFilteredProperty(): int{return min($this->limit,$this->filteredPackageCollection()->count());}public function getVisibleProperty(): int{return$this->packages->count();}
+    public function getTotalFilteredProperty(): int{return $this->modalMode ? $this->filteredPackageCollection()->count() : min($this->limit,$this->filteredPackageCollection()->count());}public function getVisibleProperty(): int{return$this->packages->count();}
     public function prepareCampaign(): void
     {
         if ($this->modalMode && ! $this->filtersApplied) {
@@ -442,16 +644,23 @@ class PostalCampaignManager extends Component
         }
 
         $this->intervalSeconds = max(30, (int) $this->intervalSeconds);
-        $this->validate([
+        $rules = [
             'campaignName' => 'required|string|max:120',
+            'campaignType' => 'required|in:operativa,promocional',
             'from' => 'nullable|date',
             'to' => 'nullable|date|after_or_equal:from',
-            'limit' => 'required|integer|min:0|max:'.($this->modalMode ? $this->availablePackageCount : 1000),
             'intervalSeconds' => 'required|integer|min:30',
             'template' => 'required|string',
-        ]);
+        ];
+        if (! $this->modalMode) {
+            $rules['limit'] = 'required|integer|min:0|max:1000';
+        }
+        $this->validate($rules);
         $this->selectedEvents = $this->eventFilter === '' ? [] : [$this->eventFilter];
-        $packages = $this->filteredPackageCollection()->take(max(0, $this->limit));
+        $packages = $this->filteredPackageCollection();
+        if (! $this->modalMode) {
+            $packages = $packages->take(max(0, $this->limit));
+        }
         if ($packages->isEmpty()) {
             session()->flash(
                 'campaignError',
@@ -465,21 +674,25 @@ class PostalCampaignManager extends Component
         $campaign = PostalCampaign::create([
             'user_id' => auth()->id(),
             'name' => $this->campaignName,
+            'campaign_type' => $this->campaignType,
             'filters' => [
                 'scope' => $this->scope,
                 'source' => $this->source,
                 'from' => $this->from ?: null,
                 'to' => $this->to ?: null,
-                'limit' => $this->limit,
+                'limit' => $this->modalMode ? $packages->count() : $this->limit,
+                'origin_department' => $this->originDepartment ?: null,
+                'destination_department' => $this->destinationDepartment ?: null,
             ],
             'events' => $this->selectedEvents,
             'template' => $this->template,
             'interval_seconds' => $this->intervalSeconds,
             'test_mode' => $this->testMode,
-            'status' => 'prepared',
+            'status' => $this->modalMode ? 'sending' : 'prepared',
             'total' => $packages->count(),
             'pending' => $packages->count(),
         ]);
+        \App\Models\AuditLog::create(['user_id'=>auth()->id(),'action'=>'Campaña creada','category'=>'campañas','description'=>'Se creó la campaña '.$campaign->name,'metadata'=>['campaign_id'=>$campaign->id],'ip_address'=>request()->ip()]);
 
         $categoryTemplates = PostalCampaignTemplate::query()
             ->where('scope', $this->scope)
@@ -502,10 +715,12 @@ class PostalCampaignManager extends Component
             ]);
         }
 
-        session()->flash('campaignCreated', "Campaña preparada con {$packages->count()} paquetes.");
         if ($this->modalMode) {
+            session()->flash('campaignCreated', "Campaña creada y envío automático iniciado para {$packages->count()} paquetes.");
             $this->dispatch('campaign-created', count: $packages->count());
             $this->dispatch('campaign-modal-close');
+        } else {
+            session()->flash('campaignCreated', "Campaña preparada con {$packages->count()} paquetes.");
         }
     }
 
@@ -513,14 +728,7 @@ class PostalCampaignManager extends Component
     {
         $categoryByEvent = $this->scope === 'internacional'
             ? [
-                'Llegada a Bolivia' => 'arrival_bolivia',
-                'Salida de Bolivia' => 'departure_bolivia',
-                'Aduana' => 'customs',
-                'Distribución nacional' => 'national_distribution',
-                'Última milla' => 'last_mile',
                 'Ventanilla para recojo' => 'pickup',
-                'Cartero' => 'courier',
-                'Entregado' => 'delivered',
             ]
             : [
                 'Recibido Origen' => 'origin',
@@ -531,7 +739,8 @@ class PostalCampaignManager extends Component
                 'Entregado' => 'delivered',
             ];
 
-        return $categoryByEvent[$this->classifyPackage($package)] ?? 'other';
+        return $categoryByEvent[$this->classifyPackage($package)]
+            ?? ($this->scope === 'internacional' ? 'international' : 'other');
     }
 
     public function sendCampaign(int $id): void
@@ -579,6 +788,11 @@ class PostalCampaignManager extends Component
 
     public function editCampaign(int $id): void {$campaign=PostalCampaign::findOrFail($id);$this->editingCampaignId=$campaign->id;$this->editingCampaignName=$campaign->name;}
     public function saveCampaignEdit(): void {$this->validate(['editingCampaignName'=>'required|string|max:120']);PostalCampaign::whereKey($this->editingCampaignId)->update(['name'=>$this->editingCampaignName]);$this->editingCampaignId=null;$this->editingCampaignName='';}
+    public function placeholder(array $params = []): string
+    {
+        return '<div class="registry-creator-loading" role="status" aria-live="polite"><span class="registry-creator-spinner" aria-hidden="true"></span><span>Cargando paquetes y filtros...</span></div>';
+    }
+
     public function render()
     {
         return view($this->modalMode ? 'livewire.postal-campaign-creator-modal' : 'livewire.postal-campaign-manager-root');

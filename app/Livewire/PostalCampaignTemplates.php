@@ -11,22 +11,13 @@ class PostalCampaignTemplates extends Component
     private const NATIONAL_CATEGORIES = [
         'origin' => ['label' => 'Origen', 'event' => 'Recibido Origen', 'color' => 'blue'],
         'transit' => ['label' => 'Camino', 'event' => 'En Camino', 'color' => 'purple'],
-        'destination' => ['label' => 'Llegó a destino', 'event' => 'Recibido Destino', 'color' => 'cyan'],
         'pickup' => ['label' => 'Ventanilla', 'event' => 'Ventanilla para recojo', 'color' => 'orange'],
         'courier' => ['label' => 'Cartero', 'event' => 'Cartero', 'color' => 'purple'],
-        'delivered' => ['label' => 'Entregado', 'event' => 'Entregado', 'color' => 'green'],
     ];
 
     private const INTERNATIONAL_CATEGORIES = [
-        'arrival_bolivia' => ['label' => 'Llegada a Bolivia', 'event' => 'Llegada a Bolivia', 'color' => 'blue'],
-        'departure_bolivia' => ['label' => 'Salida de Bolivia', 'event' => 'Salida de Bolivia', 'color' => 'cyan'],
-        'customs' => ['label' => 'Aduana', 'event' => 'Aduana', 'color' => 'purple'],
-        'national_distribution' => ['label' => 'Distribución nacional', 'event' => 'Distribución nacional', 'color' => 'cyan'],
-        'last_mile' => ['label' => 'Última milla', 'event' => 'Última milla', 'color' => 'orange'],
         'pickup' => ['label' => 'Ventanilla', 'event' => 'Ventanilla para recojo', 'color' => 'orange'],
-        'courier' => ['label' => 'Cartero', 'event' => 'Cartero', 'color' => 'purple'],
-        'delivered' => ['label' => 'Entregado', 'event' => 'Entregado', 'color' => 'green'],
-        'other' => ['label' => 'Otros estados', 'event' => 'Otros', 'color' => 'gray'],
+        'international' => ['label' => 'Internacional', 'event' => 'Actualización internacional', 'color' => 'blue'],
     ];
 
     public string $scope = 'nacional';
@@ -79,6 +70,13 @@ class PostalCampaignTemplates extends Component
             ->where('scope', $this->scope)
             ->where('category', $this->selectedCategory)
             ->first();
+
+        if (! $savedTemplate && $this->scope === 'internacional' && $this->selectedCategory === 'international') {
+            $savedTemplate = PostalCampaignTemplate::query()
+                ->where('scope', 'internacional')
+                ->where('category', 'other')
+                ->first();
+        }
 
         $this->name = $savedTemplate?->name ?? '';
         $this->template = $savedTemplate?->template ?? '';

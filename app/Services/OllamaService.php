@@ -13,7 +13,6 @@ class OllamaService
     public ?string $lastError = null;
     public function __construct(
         private readonly PostarQuoteService $postar,
-        private readonly EmsCalculator $emsCalculator,
         private readonly DeliveryExpressQuoteService $deliveryExpress,
     )
     {
@@ -240,7 +239,7 @@ class OllamaService
         if (!$destination) return null;
 
         try {
-            return $this->emsCalculator->calculate($category, $destination, $weight);
+            return $this->postar->quote($category, $destination, $weight);
         } catch (\Throwable $exception) {
             Log::warning('Cotización EMS fallida', [
                 'message' => $exception->getMessage(),

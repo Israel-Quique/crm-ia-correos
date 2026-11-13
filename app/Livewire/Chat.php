@@ -4,6 +4,7 @@ namespace App\Livewire;
 
 use App\Models\PostalCampaignMessage;
 use App\Models\WhatsAppMessage;
+use App\Models\WhatsAppConversationSetting;
 use App\Services\WhatsAppCloudApiService;
 use App\Services\WhatsAppTestNumberRegistry;
 use Illuminate\Support\Facades\DB;
@@ -16,17 +17,27 @@ class Chat extends Component
 {
     use WithFileUploads;
     public string $tab = 'personal';
+    public string $phoneSearch = '';
     public ?string $selectedPhone = null;
     public ?int $selectedCampaignMessageId = null;
     public string $message = '';
     public bool $showContactProfile = false;
     public ?TemporaryUploadedFile $attachment = null;
+    public string $conversationMode = 'automatic';
 
     public function mount(): void
     {
+        $campaignMessageId = request()->query('campaign_message');
+        if ($campaignMessageId !== null) {
+            abort_unless(filter_var($campaignMessageId, FILTER_VALIDATE_INT) !== false, 404);
+            $this->selectCampaignMessage((int) $campaignMessageId);
+            return;
+        }
+
         $this->selectedPhone = WhatsAppMessage::query()
             ->latest('received_at')
             ->value('phone');
+        $this->loadConversationMode();
         $this->markSelectedMessagesAsRead();
     }
 
@@ -36,7 +47,27 @@ class Chat extends Component
         $this->selectedCampaignMessageId = null;
         $this->tab = 'personal';
         $this->showContactProfile = false;
+        $this->loadConversationMode();
         $this->markSelectedMessagesAsRead();
+    }
+
+    public function setConversationMode(string $mode): void
+    {
+        abort_unless(in_array($mode, ['global', 'manual', 'ai', 'automatic'], true), 422);
+        if (! $this->selectedPhone) return;
+
+        WhatsAppConversationSetting::updateOrCreate(
+            ['phone' => $this->selectedPhone],
+            ['mode' => $mode, 'updated_by' => auth()->id()],
+        );
+        $this->conversationMode = $mode;
+    }
+
+    private function loadConversationMode(): void
+    {
+        $this->conversationMode = $this->selectedPhone
+            ? (WhatsAppConversationSetting::where('phone', $this->selectedPhone)->value('mode') ?: 'automatic')
+            : 'global';
     }
 
     public function refreshChat(): void
@@ -119,6 +150,11 @@ class Chat extends Component
 
     public function sendMessage(WhatsAppCloudApiService $whatsapp): void
     {
+        if ($this->attachment) {
+            $this->sendAttachment($whatsapp);
+            return;
+        }
+
         $this->validate(['selectedPhone' => ['required', 'string'], 'message' => ['required', 'string', 'max:4096']]);
         $text = trim($this->message);
         $originalPhone = $this->selectedPhone;
@@ -142,6 +178,7 @@ class Chat extends Component
                 'direction' => 'outbound', 'message_type' => 'text', 'message' => $text,
                 'status' => 'sent', 'source' => 'manual', 'sender_user_id' => auth()->id(), 'raw_payload' => $delivery['response'], 'received_at' => now(),
             ]);
+            \App\Models\AuditLog::create(['user_id'=>auth()->id(),'action'=>'Mensaje enviado manualmente','category'=>'mensajes','description'=>'Mensaje manual enviado a '.$delivery['recipient'],'ip_address'=>request()->ip()]);
             $this->message = '';
         } catch (\Throwable $exception) {
             report($exception);
@@ -156,7 +193,41 @@ class Chat extends Component
         $type = str_starts_with($mime, 'image/') ? 'image' : (str_starts_with($mime, 'video/') ? 'video' : (str_starts_with($mime, 'audio/') ? 'audio' : 'document'));
         $result = $whatsapp->sendMedia($this->selectedPhone, $this->attachment->getRealPath(), $mime);
         WhatsAppMessage::create(['provider_message_id' => data_get($result, 'messages.0.id'), 'phone' => $this->selectedPhone, 'contact_name' => WhatsAppMessage::where('phone', $this->selectedPhone)->value('contact_name'), 'direction' => 'outbound', 'message_type' => $type, 'message' => '', 'status' => 'sent', 'source' => 'manual', 'sender_user_id' => auth()->id(), 'raw_payload' => $result, 'received_at' => now()]);
+        \App\Models\AuditLog::create(['user_id'=>auth()->id(),'action'=>'Mensaje enviado manualmente','category'=>'mensajes','description'=>'Archivo enviado manualmente a '.$this->selectedPhone,'ip_address'=>request()->ip()]);
         $this->attachment = null;
+    }
+
+    public function messageStatusLabel(string $status): string
+    {
+        return match (strtolower($status)) {
+            'sent' => 'Enviado',
+            'delivered' => 'Entregado',
+            'read' => 'Visto',
+            'failed' => 'No enviado',
+            'received' => 'Recibido',
+            'pending' => 'Pendiente',
+            'sending' => 'Enviando',
+            'cancelled' => 'Cancelado',
+            'replied' => 'Respondido',
+            default => 'Estado no identificado',
+        };
+    }
+
+    public function messageTypeLabel(string $type): string
+    {
+        return match (strtolower($type)) {
+            'text' => 'Texto',
+            'image' => 'Imagen',
+            'video' => 'Video',
+            'audio' => 'Audio',
+            'document' => 'Documento',
+            'sticker' => 'Sticker',
+            'location' => 'Ubicación',
+            'contacts' => 'Contacto',
+            'interactive' => 'Interacción',
+            'button' => 'Botón',
+            default => 'Otro tipo',
+        };
     }
 
     public function render()
@@ -164,11 +235,16 @@ class Chat extends Component
         $personalMessages = WhatsAppMessage::whereIn('direction', ['inbound', 'outbound'])
             ->orderBy('received_at')
             ->get();
+        $phoneSearchDigits = preg_replace('/\D+/', '', $this->phoneSearch) ?? '';
+        $matchesPhoneSearch = fn ($message): bool => $phoneSearchDigits === ''
+            || str_contains(preg_replace('/\D+/', '', (string) $message->phone) ?? '', $phoneSearchDigits);
         $unreadCounts = $personalMessages
             ->where('direction', 'inbound')
             ->whereNull('read_at')
             ->groupBy('phone')
             ->map(fn ($messages) => $messages->count());
+        $personalInboundMessageCount = $personalMessages->where('direction', 'inbound')->count();
+        $filteredPersonalMessages = $personalMessages->filter($matchesPhoneSearch)->values();
         $selectedCampaignMessage = $this->selectedCampaignMessageId
             ? PostalCampaignMessage::with(['campaign', 'package'])->find($this->selectedCampaignMessageId)
             : null;
@@ -221,16 +297,7 @@ class Chat extends Component
 
                 return [
                     'message_id' => $message->id,
-                    'type' => match ($type) {
-                        'image' => 'Imagen',
-                        'video' => 'Video',
-                        'audio' => 'Audio',
-                        'document' => 'Documento',
-                        'sticker' => 'Sticker',
-                        'location' => 'Ubicación',
-                        'contacts' => 'Contacto',
-                        default => ucfirst($type),
-                    },
+                    'type' => $this->messageTypeLabel($type),
                     'description' => data_get($payload, 'filename')
                         ?: data_get($payload, 'caption')
                         ?: 'Archivo multimedia recibido',
@@ -253,9 +320,17 @@ class Chat extends Component
             ->unique('url')
             ->values();
 
+        $campaignMessages = PostalCampaignMessage::with(['campaign', 'package'])->latest()->get();
+        $campaignMessageCount = $campaignMessages->count();
+        $campaignMessages = $campaignMessages->filter($matchesPhoneSearch)->values();
+
         return view('livewire.chat', [
-            'campaignMessages' => PostalCampaignMessage::with(['campaign', 'package'])->latest()->get(),
+            'campaignMessages' => $campaignMessages,
+            'campaignMessageCount' => $campaignMessageCount,
+            'personalInboundMessageCount' => $personalInboundMessageCount,
+            'phoneSearchDigits' => $phoneSearchDigits,
             'personalMessages' => $personalMessages,
+            'filteredPersonalMessages' => $filteredPersonalMessages,
             'unreadCounts' => $unreadCounts,
             'selectedContactMessages' => $selectedContactMessages,
             'selectedCampaignMessage' => $selectedCampaignMessage,

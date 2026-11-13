@@ -1,0 +1,151 @@
+@extends('layouts.crm', ['title' => 'Panel principal · Conversa OS'])
+@push('styles')
+<style>
+.dashboard-audit{margin-top:16px}.audit-list{display:grid;grid-template-columns:repeat(2,1fr);gap:0 28px}.audit-row{display:flex;align-items:center;gap:11px;padding:13px 0;border-top:1px solid #e5ebf2}.audit-row>div:nth-child(2){flex:1}.audit-row strong{display:block;color:#294968;font-size:12px}.audit-row small{color:#71839a;font-size:11px}.audit-row>b{color:#102a4c;font-size:16px}.audit-icon{width:25px;height:25px;border-radius:50%;display:grid;place-items:center;background:#e8f7ef;color:#0b9a67;font-size:12px;font-weight:700}@media(max-width:600px){.audit-list{grid-template-columns:1fr}}
+.dashboard-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}.dashboard-stat{position:relative;padding:20px}.dashboard-stat>span{display:block;color:#60728b;font-size:12px;font-weight:700}.dashboard-stat strong{display:block;margin:12px 0 3px;font:700 30px 'Space Grotesk';color:#102a4c}.dashboard-stat small,.dashboard-panel p,.service-row small,.dashboard-activity small{color:#71839a;font-size:11px}.dashboard-stat-icon,.service-symbol{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-weight:700;margin-bottom:15px}.dashboard-stat-icon.warning,.service-symbol.warning{background:#fff2d6;color:#d97706}.dashboard-stat-icon.blue,.service-symbol.blue{background:#e4efff;color:#3478d4}.dashboard-stat-icon.purple,.service-symbol.purple{background:#eee8ff;color:#7956d8}.dashboard-stat-icon.green{background:#ddf8ec;color:#0b9a67}.dashboard-columns{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}.dashboard-panel{padding:21px}.dashboard-panel-head{display:flex;justify-content:space-between;align-items:start;margin-bottom:8px}.dashboard-panel h2{margin:0;color:#102a4c;font-size:17px}.dashboard-panel p{margin:5px 0 0}.dashboard-badge{font-size:10px;color:#0b9a67;background:#ddf8ec;padding:6px 9px;border-radius:20px;font-weight:700}.service-row,.dashboard-activity{display:flex;align-items:center;gap:12px;padding:15px 0;border-top:1px solid #e5ebf2}.service-row>div:nth-child(2),.dashboard-activity>div:last-child{flex:1}.service-row .service-symbol{margin:0}.service-row strong,.dashboard-activity strong{display:block;font-size:13px;color:#294968}.service-value{font-size:12px}.service-value i,.dashboard-live i{display:inline-block;width:7px;height:7px;background:currentColor;border-radius:50%;margin-right:5px}.success{color:#0b9a67}.danger{color:#dc4b4b}.dashboard-activity{padding:13px 0}.activity-dot{width:9px;height:9px;background:#f59e0b;border-radius:50%;box-shadow:0 0 0 4px #fff2d6}.dashboard-empty{color:#71839a;font-size:13px;padding:24px 0}.dashboard-live{font-size:11px;color:#0b9a67;font-weight:700}.dashboard-page{color:#102a4c!important}@media(max-width:900px){.dashboard-metrics{grid-template-columns:repeat(2,1fr)}}@media(max-width:600px){.dashboard-metrics,.dashboard-columns{grid-template-columns:1fr}}
+body.night-mode .dashboard-stat strong,body.night-mode .dashboard-panel h2,body.night-mode .service-row strong,body.night-mode .dashboard-activity strong{color:#f8fafc}body.night-mode .dashboard-stat>span,body.night-mode .dashboard-stat small,body.night-mode .dashboard-panel p,body.night-mode .service-row small,body.night-mode .dashboard-activity small,body.night-mode .dashboard-empty{color:#9aafd0}body.night-mode .dashboard-panel,body.night-mode .dashboard-stat{background:#0c1528!important;border-color:#233451!important}body.night-mode .service-row,body.night-mode .dashboard-activity{border-color:#233451}
+.dashboard-stat-trigger{width:100%;text-align:left;color:inherit;font:inherit;cursor:pointer;transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
+.dashboard-stat-trigger:hover{transform:translateY(-3px);border-color:#3b82f6!important;box-shadow:0 12px 28px rgba(30,58,138,.15)!important}
+.dashboard-stat-trigger:focus-visible{outline:3px solid #3b82f6;outline-offset:3px}
+.dashboard-stat-trigger .dashboard-stat-icon{transition:transform .18s ease}
+.dashboard-stat-trigger:hover .dashboard-stat-icon{transform:scale(1.08)}
+.dashboard-metric-dialog{position:fixed;inset:0;margin:auto;width:min(480px,calc(100vw - 32px));max-height:calc(100dvh - 32px);padding:0;overflow:auto}
+.dashboard-metric-dialog .modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:20px 22px}
+.dashboard-metric-dialog .modal-head h2{margin:0;font-size:19px}
+.dashboard-metric-dialog .modal-head p{margin:6px 0 0;font-size:12px;line-height:1.5}
+.dashboard-metric-content{padding:22px}
+.dashboard-metric-value{display:flex;align-items:baseline;gap:9px;margin-bottom:16px;color:#0b192c}
+.dashboard-metric-value strong{font:700 36px 'Space Grotesk';letter-spacing:-1px}
+.dashboard-metric-value span{color:#52657e;font-size:12px}
+.dashboard-metric-description{margin:0 0 16px;color:#334155;font-size:13px;line-height:1.6}
+.dashboard-metric-note{display:flex;gap:10px;padding:12px;border:1px solid #dbeafe;border-radius:10px;background:#f4f8ff;color:#334155;font-size:12px;line-height:1.5}
+.dashboard-metric-note>span{display:grid;width:22px;height:22px;flex:none;place-items:center;border-radius:7px;background:#dbeafe;color:#1e3a8a;font-weight:800}
+.dashboard-metric-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:9px;padding:0 22px 20px}
+.dashboard-metric-actions .primary-btn,.dashboard-metric-actions .secondary-btn{display:inline-flex;align-items:center;justify-content:center;min-height:38px;margin:0;padding:9px 13px;text-decoration:none}
+.dashboard-detail-list{display:grid;gap:9px;margin-top:16px}
+.dashboard-detail-row{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:11px 12px;border:1px solid #e2e8f0;border-radius:9px;background:#fff;color:#334155;font-size:12px;line-height:1.45}
+.dashboard-detail-row>span:first-child{min-width:0}
+.dashboard-detail-row strong,.dashboard-detail-row small{display:block}
+.dashboard-detail-row small{margin-top:3px;color:#64748b;font-size:11px}
+.dashboard-detail-row>strong{flex:none;color:#102a4c}
+.dashboard-detail-empty{margin:14px 0 0;color:#64748b;font-size:12px}
+body.night-mode .dashboard-metric-dialog .dashboard-detail-row{background:#111f30;border-color:#334766;color:#e2e8f0}
+body.night-mode .dashboard-metric-dialog .dashboard-detail-row strong{color:#f8fafc}
+body.night-mode .dashboard-metric-dialog .dashboard-detail-row small,body.night-mode .dashboard-metric-dialog .dashboard-detail-empty{color:#aabbd0}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog{color-scheme:light;background:#fff!important;color:#102a4c!important;border:1px solid #d5e0eb!important;box-shadow:0 20px 60px rgba(15,41,69,.24)!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .modal-head{background:#f8fafc!important;border-bottom:2px solid #eab308!important;color:#102a4c!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .modal-head h2,body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .dashboard-metric-value,body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .dashboard-metric-value strong{color:#102a4c!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .modal-head p,body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .dashboard-metric-value span,body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .dashboard-detail-row small,body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .dashboard-detail-empty{color:#52657e!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .dashboard-metric-description{color:#334155!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .dashboard-detail-row{background:#f8fafc!important;border-color:#dbe3ed!important;color:#334155!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .dashboard-detail-row strong{color:#102a4c!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .dashboard-metric-note{background:#f4f8ff!important;border-color:#dbeafe!important;color:#334155!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .dashboard-metric-note>span{background:#dbeafe!important;color:#1e3a8a!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .modal-close{background:#facc15!important;border-color:#eab308!important;color:#0b192c!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .secondary-btn{background:#fff!important;border-color:#cbd5e1!important;color:#334155!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .secondary-btn:hover{background:#f1f5f9!important}
+body:not(.night-mode) .app-shell .content .dashboard-metric-dialog .primary-btn{background:#facc15!important;border-color:#eab308!important;color:#0b192c!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog{color-scheme:dark;background:#0c1528!important;color:#e2e8f0!important;border-color:#334766!important;box-shadow:0 24px 70px rgba(2,8,23,.6)!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .modal-head{background:#111f30!important;border-bottom:2px solid #eab308!important;color:#f8fafc!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .modal-head h2,body.night-mode .app-shell .content .dashboard-metric-dialog .dashboard-metric-value,body.night-mode .app-shell .content .dashboard-metric-dialog .dashboard-metric-value strong{color:#f8fafc!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .modal-head p,body.night-mode .app-shell .content .dashboard-metric-dialog .dashboard-metric-value span,body.night-mode .app-shell .content .dashboard-metric-dialog .dashboard-detail-row small,body.night-mode .app-shell .content .dashboard-metric-dialog .dashboard-detail-empty{color:#aabbd0!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .dashboard-metric-description{color:#cbd5e1!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .dashboard-detail-row{background:#111f30!important;border-color:#334766!important;color:#e2e8f0!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .dashboard-detail-row strong{color:#f8fafc!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .dashboard-metric-note{background:#142943!important;border-color:#31527a!important;color:#dbe5f0!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .dashboard-metric-note>span{background:#dbeafe!important;color:#1e3a8a!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .modal-close{background:#facc15!important;border-color:#eab308!important;color:#0b192c!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .secondary-btn{background:#1b3150!important;border-color:#526987!important;color:#e2e8f0!important}
+body.night-mode .app-shell .content .dashboard-metric-dialog .primary-btn{background:#facc15!important;border-color:#eab308!important;color:#0b192c!important}
+@media(prefers-reduced-motion:reduce){.dashboard-stat-trigger,.dashboard-stat-trigger .dashboard-stat-icon{transition:none!important}}
+</style>
+@endpush
+@section('content')
+<style>
+.dashboard-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}.dashboard-stat{position:relative;padding:20px}.dashboard-stat>span{display:block;color:#60728b;font-size:12px;font-weight:700}.dashboard-stat strong{display:block;margin:12px 0 3px;font:700 30px 'Space Grotesk';color:#102a4c}.dashboard-stat small,.dashboard-panel p,.service-row small,.dashboard-activity small{color:#71839a;font-size:11px}.dashboard-stat-icon,.service-symbol{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-weight:700;margin-bottom:15px}.warning{background:#fff2d6;color:#d97706}.blue{background:#e4efff;color:#3478d4}.purple{background:#eee8ff;color:#7956d8}.green{background:#ddf8ec;color:#0b9a67}.dashboard-columns{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}.dashboard-panel{padding:21px}.dashboard-panel-head{display:flex;justify-content:space-between;align-items:start;margin-bottom:8px}.dashboard-panel h2{margin:0;color:#102a4c;font-size:17px}.dashboard-panel p{margin:5px 0 0}.dashboard-badge{font-size:10px;color:#0b9a67;background:#ddf8ec;padding:6px 9px;border-radius:20px;font-weight:700}.service-row,.dashboard-activity{display:flex;align-items:center;gap:12px;padding:15px 0;border-top:1px solid #e5ebf2}.service-row>div:nth-child(2),.dashboard-activity>div:last-child{flex:1}.service-row .service-symbol{margin:0}.service-row strong,.dashboard-activity strong{display:block;font-size:13px;color:#294968}.service-value{font-size:12px}.success{color:#0b9a67}.danger{color:#dc4b4b}.dashboard-live{font-size:11px;color:#0b9a67;font-weight:700}.dashboard-page{color:#102a4c!important}@media(max-width:900px){.dashboard-metrics{grid-template-columns:repeat(2,1fr)}}@media(max-width:600px){.dashboard-metrics,.dashboard-columns{grid-template-columns:1fr}}body.night-mode .dashboard-stat strong,body.night-mode .dashboard-panel h2,body.night-mode .service-row strong,body.night-mode .dashboard-activity strong{color:#f8fafc}body.night-mode .dashboard-stat>span,body.night-mode .dashboard-stat small,body.night-mode .dashboard-panel p,body.night-mode .service-row small,body.night-mode .dashboard-empty{color:#9aafd0}body.night-mode .dashboard-panel,body.night-mode .dashboard-stat{background:#0c1528!important;border-color:#233451!important}body.night-mode .service-row,body.night-mode .dashboard-activity{border-color:#233451}
+</style>
+<style>
+.dashboard-page .welcome{margin-bottom:18px;padding:20px 24px;border:1px solid #33495b;border-left:3px solid #dfaa43;border-radius:14px;background:linear-gradient(120deg,#172b3b,#1d3040)}
+.dashboard-page .welcome p{color:#b7c4d8}
+.dashboard-live{padding:8px 11px;border:1px solid #2b6957;border-radius:999px;background:#103d35;color:#a7f3d0}
+.dashboard-metrics{grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.dashboard-stat{min-width:0;min-height:180px;padding:16px;border:1px solid #33495b;border-radius:14px;background:linear-gradient(145deg,#1b2c3a,#233746);box-shadow:0 10px 24px #02081725}
+.dashboard-stat:before{position:absolute;inset:0 auto 0 0;width:3px;border-radius:14px 0 0 14px;background:linear-gradient(#dfaa43,#b47c28);content:""}
+.dashboard-stat-trigger:hover{transform:translateY(-3px);border-color:#dfaa43!important;box-shadow:0 14px 28px #02081755!important}
+.dashboard-stat>span:not(.dashboard-stat-icon){min-height:30px;color:#cbd5e1}
+.dashboard-stat strong{margin:10px 0 6px;font-size:clamp(23px,2.4vw,30px);letter-spacing:-.04em}
+.dashboard-stat small{display:block;min-height:30px;color:#9fb0c2;line-height:1.45}
+.dashboard-stat-icon{margin-bottom:12px}
+.dashboard-columns{align-items:stretch;gap:16px;margin-top:18px}
+.dashboard-panel{border:1px solid #33495b;border-radius:14px;background:linear-gradient(145deg,#1b2c3a,#223544);box-shadow:0 12px 28px #02081730}
+.dashboard-panel-head{padding-bottom:13px;border-bottom:1px solid #dfaa4355}
+.dashboard-activity{transition:background .18s ease}
+.dashboard-activity:hover{background:#ffffff08}
+.dashboard-empty{padding:30px 0;text-align:center}
+@media(max-width:1250px){.dashboard-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:760px){.dashboard-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-page .welcome{align-items:flex-start;gap:12px;padding:17px}}
+@media(max-width:480px){.dashboard-metrics,.dashboard-columns{grid-template-columns:1fr}.dashboard-stat{min-height:160px}.dashboard-page .welcome{flex-direction:column}}
+body.night-mode .dashboard-page .welcome{background:linear-gradient(120deg,#111f30,#18283a);border-color:#334766;border-left-color:#facc15}
+body.night-mode .dashboard-stat{background:linear-gradient(145deg,#111f30,#18283a);border-color:#334766}
+body.night-mode .dashboard-stat>span:not(.dashboard-stat-icon){color:#dbe5f0}
+body.night-mode .dashboard-stat small{color:#aabbd0}
+body.night-mode .dashboard-panel{background:linear-gradient(145deg,#111f30,#18283a);border-color:#334766}
+body.night-mode .dashboard-panel-head{border-color:#eab30855}
+</style>
+<main class="content dashboard-page">
+<div class="welcome"><div><h1>Panel principal</h1><p>Vista operativa del sistema y sus canales de atención.</p></div><span class="dashboard-live"><i></i> Actualizado ahora</span></div>
+<section class="dashboard-metrics">
+@foreach ([['Mensajes no leídos', $unanswered, '↗', 'warning', 'Recibidos sin abrir · Ver detalles'], ['Conversaciones activas', $activeConversations, '◌', 'blue', 'Contactos con mensajes en las últimas 24 horas · Ver detalles'], ['Enviados este mes', $sentThisMonth, '➤', 'green', now()->translatedFormat('F Y') . ' · Ver detalles'], ['Campañas en curso', $runningCampaigns, '▣', 'purple', 'Estados activos · Ver detalles'], ['Paquetes registrados', $availablePackages, '▦', 'blue', 'Total local por origen · Ver detalles']] as [$label, $value, $icon, $tone, $description])
+<button type="button" class="dashboard-stat dashboard-stat-trigger card" aria-haspopup="dialog" aria-controls="dashboardMetric{{ $loop->index }}" onclick="document.getElementById('dashboardMetric{{ $loop->index }}').showModal()">
+    <span class="dashboard-stat-icon {{ $tone }}" aria-hidden="true">{{ $icon }}</span>
+    <span>{{ $label }}</span>
+    <strong>{{ number_format($value) }}</strong>
+    <small>{{ $description }}</small>
+</button>
+@endforeach
+</section>
+<dialog id="dashboardMetric0" class="dashboard-metric-dialog" aria-labelledby="dashboardMetricTitle0">
+    <div class="modal-head"><div><h2 id="dashboardMetricTitle0">Mensajes no leídos</h2><p>Mensajes entrantes sin fecha de lectura registrada.</p></div><button type="button" class="modal-close" aria-label="Cerrar" onclick="this.closest('dialog').close()">×</button></div>
+    <div class="dashboard-metric-content"><div class="dashboard-metric-value"><strong>{{ number_format($unanswered) }}</strong><span>mensajes no leídos</span></div><p class="dashboard-metric-description">El total no equivale necesariamente a mensajes sin respuesta: indica únicamente que el mensaje aún no se ha marcado como leído.</p>
+        <div class="dashboard-detail-list">@forelse($unreadMessageDetails as $detail)<div class="dashboard-detail-row"><span><strong>{{ $detail->contact_name ?: $detail->phone }}</strong><small>{{ $detail->phone }} · {{ optional($detail->created_at)->format('d/m/Y H:i') }}</small><small>{{ \Illuminate\Support\Str::limit($detail->message ?: 'Mensaje sin texto', 110) }}</small></span><strong>Sin leer</strong></div>@empty<p class="dashboard-detail-empty">No hay mensajes pendientes de lectura.</p>@endforelse</div>
+    </div>
+    <div class="dashboard-metric-actions"><button type="button" class="secondary-btn" onclick="this.closest('dialog').close()">Cerrar</button><a class="primary-btn" href="{{ route('chat') }}">Ir a chats</a></div>
+</dialog>
+<dialog id="dashboardMetric1" class="dashboard-metric-dialog" aria-labelledby="dashboardMetricTitle1">
+    <div class="modal-head"><div><h2 id="dashboardMetricTitle1">Conversaciones activas</h2><p>Actividad desde {{ now()->subHours(24)->format('d/m/Y H:i') }}.</p></div><button type="button" class="modal-close" aria-label="Cerrar" onclick="this.closest('dialog').close()">×</button></div>
+    <div class="dashboard-metric-content"><div class="dashboard-metric-value"><strong>{{ number_format($activeConversations) }}</strong><span>números únicos con actividad</span></div><p class="dashboard-metric-description">Se cuentan teléfonos únicos con uno o más mensajes registrados durante las últimas 24 horas. No es un indicador de conversaciones abiertas.</p>
+        <div class="dashboard-detail-list"><div class="dashboard-detail-row"><span>Mensajes recibidos</span><strong>{{ number_format($activeInboundCount) }}</strong></div><div class="dashboard-detail-row"><span>Mensajes enviados</span><strong>{{ number_format($activeOutboundCount) }}</strong></div>
+            @forelse($activeContactDetails as $detail)<div class="dashboard-detail-row"><span>Contacto reciente<small>{{ $detail->phone }}</small></span><strong>{{ \Illuminate\Support\Carbon::parse($detail->last_activity)->format('d/m/Y H:i') }}</strong></div>@empty<p class="dashboard-detail-empty">No se registró actividad en este período.</p>@endforelse
+        </div>
+    </div>
+    <div class="dashboard-metric-actions"><button type="button" class="secondary-btn" onclick="this.closest('dialog').close()">Cerrar</button><a class="primary-btn" href="{{ route('chat') }}">Ver conversaciones</a></div>
+</dialog>
+<dialog id="dashboardMetric2" class="dashboard-metric-dialog" aria-labelledby="dashboardMetricTitle2">
+    <div class="modal-head"><div><h2 id="dashboardMetricTitle2">Mensajes enviados este mes</h2><p>Mensajes salientes registrados durante {{ now()->translatedFormat('F Y') }}.</p></div><button type="button" class="modal-close" aria-label="Cerrar" onclick="this.closest('dialog').close()">×</button></div>
+    <div class="dashboard-metric-content"><div class="dashboard-metric-value"><strong>{{ number_format($sentThisMonth) }}</strong><span>mensajes salientes aceptados o entregados</span></div><p class="dashboard-metric-description">Cuenta mensajes salientes registrados este mes con estado enviado, entregado, leído o respondido. Excluye fallidos y pendientes.</p>
+        <div class="dashboard-detail-list">@foreach(['sent' => 'Enviados', 'delivered' => 'Entregados', 'read' => 'Leídos', 'replied' => 'Respondidos'] as $status => $statusLabel)<div class="dashboard-detail-row"><span>{{ $statusLabel }}</span><strong>{{ number_format((int) ($sentStatusBreakdown[$status] ?? 0)) }}</strong></div>@endforeach</div>
+    </div>
+    <div class="dashboard-metric-actions"><button type="button" class="secondary-btn" onclick="this.closest('dialog').close()">Cerrar</button><a class="primary-btn" href="{{ route('chat') }}">Ir a chats</a></div>
+</dialog>
+<dialog id="dashboardMetric3" class="dashboard-metric-dialog" aria-labelledby="dashboardMetricTitle3">
+    <div class="modal-head"><div><h2 id="dashboardMetricTitle3">Campañas en curso</h2><p>Campañas que figuran como activas.</p></div><button type="button" class="modal-close" aria-label="Cerrar" onclick="this.closest('dialog').close()">×</button></div>
+    <div class="dashboard-metric-content"><div class="dashboard-metric-value"><strong>{{ number_format($runningCampaigns) }}</strong><span>campañas activas</span></div><p class="dashboard-metric-description">Incluye estados running, active y en curso. El progreso mostrado usa los contadores guardados en cada campaña.</p>
+        <div class="dashboard-detail-list">@forelse($runningCampaignDetails as $campaign)<div class="dashboard-detail-row"><span><strong>{{ $campaign->name }}</strong><small>{{ ucfirst($campaign->campaign_type ?: 'postal') }} · Estado: {{ $campaign->status }}</small><small>Enviados: {{ number_format($campaign->sent) }} · Pendientes: {{ number_format($campaign->pending) }} · Fallidos: {{ number_format($campaign->failed) }}</small></span><strong>{{ number_format($campaign->total) }} total</strong></div>@empty<p class="dashboard-detail-empty">No hay campañas activas.</p>@endforelse</div>
+    </div>
+    <div class="dashboard-metric-actions"><button type="button" class="secondary-btn" onclick="this.closest('dialog').close()">Cerrar</button><a class="primary-btn" href="{{ route('postal-campaigns.national.registry') }}">Ver campañas</a></div>
+</dialog>
+<dialog id="dashboardMetric4" class="dashboard-metric-dialog" aria-labelledby="dashboardMetricTitle4">
+    <div class="modal-head"><div><h2 id="dashboardMetricTitle4">Paquetes registrados</h2><p>Registros locales disponibles para consulta.</p></div><button type="button" class="modal-close" aria-label="Cerrar" onclick="this.closest('dialog').close()">×</button></div>
+    <div class="dashboard-metric-content"><div class="dashboard-metric-value"><strong>{{ number_format($availablePackages) }}</strong><span>registros postales</span></div><p class="dashboard-metric-description">El total cuenta registros almacenados; no garantiza que todos estén actualmente en tránsito ni que los datos estén actualizados.</p>
+        <div class="dashboard-detail-list">@forelse($packageSourceBreakdown as $source)<div class="dashboard-detail-row"><span>{{ \Illuminate\Support\Str::headline($source->source ?: 'Sin origen') }}</span><strong>{{ number_format($source->total) }}</strong></div>@empty<p class="dashboard-detail-empty">No hay paquetes registrados.</p>@endforelse</div>
+        <div class="dashboard-metric-note"><span>i</span><div>Última sincronización registrada: {{ $lastPackageSync ? \Illuminate\Support\Carbon::parse($lastPackageSync)->format('d/m/Y H:i') : 'sin datos de sincronización' }}.</div></div>
+    </div>
+    <div class="dashboard-metric-actions"><button type="button" class="secondary-btn" onclick="this.closest('dialog').close()">Cerrar</button><a class="primary-btn" href="{{ route('tracking.national') }}">Ir al rastreo</a></div>
+</dialog>
+<section class="dashboard-columns"><div class="card dashboard-panel"><div class="dashboard-panel-head"><div><h2>Centro operativo</h2><p>Estado de servicios críticos</p></div><span class="dashboard-badge">EN VIVO</span></div>
+<div class="service-row"><div class="service-symbol blue">⌁</div><div><strong>Errores de APIs</strong><small>Incidencias registradas</small></div><b class="service-value {{ $apiErrors ? 'danger' : 'success' }}">{{ $apiErrors ?: 'Sin errores' }}</b></div>
+<div class="service-row"><div class="service-symbol purple">✦</div><div><strong>Estado de Ollama</strong><small>Motor local de inteligencia artificial</small></div><b class="service-value {{ $ollamaOnline ? 'success' : 'danger' }}"><i></i>{{ $ollamaOnline ? 'Operativo' : 'Desconectado' }}</b></div></div>
+<div class="card dashboard-panel"><div class="dashboard-panel-head"><div><h2>Últimas actividades</h2><p>Movimientos recientes del sistema</p></div></div>
+@forelse ($activities as $activity)<div class="dashboard-activity"><div class="activity-dot"></div><div><strong>{{ $activity->direction === 'inbound' ? 'Nuevo mensaje recibido' : 'Mensaje enviado' }}</strong><small>{{ $activity->contact_name ?: $activity->phone }} · {{ optional($activity->created_at)->diffForHumans() }}</small></div></div>@empty<div class="dashboard-empty">Todavía no hay actividades recientes.</div>@endforelse</div></section>
+</main>
+@endsection

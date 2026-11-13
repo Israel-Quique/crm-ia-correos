@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\WhatsAppMessage;
+use App\Models\WhatsAppConversationSetting;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -16,6 +17,7 @@ class WhatsAppAutoReplyService
         private readonly WhatsAppCloudApiService $whatsapp,
         private readonly WhatsAppTestNumberRegistry $testNumbers,
         private readonly LanguageService $language,
+        private readonly WhatsAppDecisionTreeService $decisionTree,
     ) {
     }
 
@@ -25,9 +27,29 @@ class WhatsAppAutoReplyService
         $testMode = $this->settingEnabled('test_mode');
         $automaticResponsesEnabled = $this->settingEnabled('automatic_responses_enabled');
         $aiEnabled = $this->settingEnabled('ai_enabled');
+        $conversationMode = WhatsAppConversationSetting::where('phone', $incomingPhone)->value('mode') ?: 'global';
         if ($incoming->message_type !== 'text'
-            || trim((string) $incoming->message) === ''
-            || (! $automaticResponsesEnabled && ! $aiEnabled)) {
+            || trim((string) $incoming->message) === '') {
+            return;
+        }
+
+        if ($conversationMode === 'manual') {
+            $incoming->forceFill(['auto_reply_status' => 'ignored'])->save();
+            return;
+        }
+
+        // Si ambos automatismos están apagados, el mensaje queda disponible
+        // para que un usuario responda manualmente desde el CRM.
+        if ($conversationMode === 'ai') {
+            $aiEnabled = true;
+            $automaticResponsesEnabled = false;
+        } elseif ($conversationMode === 'automatic') {
+            $aiEnabled = false;
+            $automaticResponsesEnabled = true;
+        }
+
+        if (! $automaticResponsesEnabled && ! $aiEnabled) {
+            $incoming->forceFill(['auto_reply_status' => 'ignored'])->save();
             return;
         }
 
@@ -38,6 +60,7 @@ class WhatsAppAutoReplyService
         }
 
         if ($testMode && ! $this->testNumbers->contains($incomingPhone)) {
+            $incoming->forceFill(['auto_reply_status' => 'ignored'])->save();
             return;
         }
 
@@ -58,6 +81,20 @@ class WhatsAppAutoReplyService
 
         $claimedIds = $pendingMessages->modelKeys();
         if ($claimedIds === []) {
+            return;
+        }
+
+        $latestMessageAt = $pendingMessages->last()->received_at ?? $incomingAt;
+        if ($latestMessageAt->lte(now()->subDay())) {
+            WhatsAppMessage::query()
+                ->whereKey($pendingMessages->modelKeys())
+                ->whereNull('auto_reply_status')
+                ->update(['auto_reply_status' => 'ignored', 'updated_at' => now()]);
+            Log::info('Respuesta automática omitida: la ventana de conversación de WhatsApp expiró.', [
+                'message_id' => $incoming->provider_message_id,
+                'latest_inbound_at' => $latestMessageAt->toDateTimeString(),
+            ]);
+
             return;
         }
 
@@ -84,40 +121,79 @@ class WhatsAppAutoReplyService
         $combinedMessage = $claimedMessages->pluck('message')->implode("\n");
         $responseLanguage = $this->language->detect($combinedMessage);
         $claimedIds = $claimedMessages->modelKeys();
+        $history = WhatsAppMessage::query()
+            ->where('phone', $incoming->phone)
+            ->whereIn('direction', ['inbound', 'outbound'])
+            ->where('message_type', 'text')
+            ->whereNotNull('message')
+            ->whereNotIn('id', $claimedIds)
+            ->latest('received_at')
+            ->limit(16)
+            ->get()
+            ->reverse()
+            ->map(fn (WhatsAppMessage $message) => [
+                'role' => $message->direction === 'inbound' ? 'user' : 'assistant',
+                'text' => $message->message,
+                'source' => $message->source,
+            ])
+            ->values()
+            ->all();
 
         try {
             $reply = null;
-            $replySource = 'automatic';
+            $replySource = 'ai_agent';
+            $matchedResponse = null;
+            $matchedWorkflow = null;
+
             if ($automaticResponsesEnabled) {
                 foreach ($claimedMessages->reverse() as $message) {
-                    $reply = $this->responseMatcher->match($message->message)?->template;
-                    if ($reply !== null) {
+                    $candidate = $this->responseMatcher->match($message->message);
+                    $matchedResponse ??= $candidate;
+                    if (in_array($candidate?->type, ['quote', 'tracking'], true)) {
+                        $matchedWorkflow = $candidate;
                         break;
                     }
                 }
-            }
-            if ($reply === null && $aiEnabled) {
-                $history = WhatsAppMessage::query()
-                    ->where('phone', $incoming->phone)
-                    ->whereIn('direction', ['inbound', 'outbound'])
-                    ->where('message_type', 'text')
-                    ->whereNotNull('message')
-                    ->whereNotIn('id', $claimedIds)
-                    ->latest('received_at')
-                    ->limit(16)
-                    ->get()
-                    ->reverse()
-                    ->map(fn (WhatsAppMessage $message) => [
-                        'role' => $message->direction === 'inbound' ? 'user' : 'assistant',
-                        'text' => $message->message,
-                    ])
-                    ->values()
-                    ->all();
 
-                $replySource = 'ai_agent';
+                $reply = $this->decisionTree->replyTo(
+                    $replyRecipient,
+                    $combinedMessage,
+                    $matchedWorkflow ?? $matchedResponse,
+                );
+                if ($reply !== null) {
+                    $replySource = 'automatic_decision_tree';
+                }
+            }
+
+            if ($reply === null
+                && $automaticResponsesEnabled
+                && $matchedResponse?->type === 'event'
+                && $matchedResponse->scope === 'general'
+                && trim($matchedResponse->template) !== '') {
+                $reply = trim($matchedResponse->template);
+                $replySource = 'automatic';
+            }
+
+            if ($reply === null && $aiEnabled) {
                 $reply = $responseLanguage === 'es'
                     ? $this->ollama->chat($combinedMessage, $history, 'general')
                     : $this->ollama->chat($combinedMessage, $history, 'general', $responseLanguage);
+            } elseif ($reply === null && $automaticResponsesEnabled) {
+                $replySource = 'automatic';
+
+                if ($matchedWorkflow || $this->isPostalWorkflowContinuation($history)) {
+                    $reply = $responseLanguage === 'es'
+                        ? $this->ollama->chat($combinedMessage, $history, 'general')
+                        : $this->ollama->chat($combinedMessage, $history, 'general', $responseLanguage);
+                    $replySource = 'automatic_workflow';
+                } else {
+                    foreach ($claimedMessages->reverse() as $message) {
+                        $reply = $this->responseMatcher->match($message->message)?->template;
+                        if ($reply !== null) {
+                            break;
+                        }
+                    }
+                }
             }
 
             if ($reply === null) {
@@ -166,5 +242,38 @@ class WhatsAppAutoReplyService
     private function normalizePhone(string $phone): string
     {
         return preg_replace('/\D+/', '', $phone) ?? '';
+    }
+
+    private function isPostalWorkflowContinuation(array $history): bool
+    {
+        $lastAssistantMessage = collect($history)
+            ->reverse()
+            ->first(fn (array $message) => $message['role'] === 'assistant');
+
+        if (! $lastAssistantMessage
+            || $lastAssistantMessage['source'] !== 'automatic_workflow'
+            || ! preg_match('/\?|¿/u', $lastAssistantMessage['text'])) {
+            return false;
+        }
+
+        if (preg_match(
+            '/(?:ciudad|origen|destino|ems|delivery|modalidad|pesa|peso|gu[ií]a|n[uú]mero|pa[ií]s|kg)/iu',
+            $lastAssistantMessage['text'],
+        ) !== 1) {
+            return false;
+        }
+
+        foreach (array_reverse($history) as $message) {
+            if ($message['role'] !== 'user') {
+                continue;
+            }
+
+            $response = $this->responseMatcher->match($message['text']);
+            if (in_array($response?->type, ['quote', 'tracking'], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

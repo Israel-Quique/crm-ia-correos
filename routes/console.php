@@ -3,6 +3,7 @@
 use Illuminate\Support\Facades\Schedule;
 use Illuminate\Support\Facades\DB;
 
+Schedule::command('queue:work --queue=whatsapp-incoming,whatsapp-media,default --sleep=1 --max-time=50 --timeout=650 --tries=1')->everyMinute()->withoutOverlapping(12);
 Schedule::command('crm:sync-api')->everyFiveMinutes()->withoutOverlapping();
 Schedule::command('postal:sync nacional --months=12')->everyThirtyMinutes()->withoutOverlapping()->when(fn () => (bool) ((int) DB::table('app_settings')->where('key', 'postal_sync_enabled')->value('value')));
 Schedule::command('postal:sync internacional --months=12')->everyThirtyMinutes()->withoutOverlapping()->when(fn () => (bool) ((int) DB::table('app_settings')->where('key', 'postal_sync_enabled')->value('value')));

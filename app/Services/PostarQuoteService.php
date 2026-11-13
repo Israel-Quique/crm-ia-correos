@@ -66,6 +66,13 @@ class PostarQuoteService
 
     public function destinationCodeFromText(string $text): ?string
     {
+        $codes = $this->destinationCodesFromText($text);
+
+        return $codes === [] ? null : $codes[array_key_last($codes)];
+    }
+
+    public function destinationCodesFromText(string $text): array
+    {
         $normalized = mb_strtolower($text, 'UTF-8');
         $normalized = strtr($normalized, ['á'=>'a','é'=>'e','í'=>'i','ó'=>'o','ú'=>'u']);
         $matches = [];
@@ -76,6 +83,7 @@ class PostarQuoteService
             }
         }
         usort($matches, fn ($first, $second) => $first['position'] <=> $second['position']);
-        return $matches ? $matches[array_key_last($matches)]['code'] : null;
+
+        return array_values(array_unique(array_column($matches, 'code')));
     }
 }

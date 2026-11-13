@@ -5,17 +5,12 @@ namespace App\Http\Controllers;
 use App\Models\WhatsAppMessage;
 use App\Models\PostalCampaignMessage;
 use App\Jobs\ProcessWhatsAppAutoReply;
-use App\Services\WhatsAppCloudApiService;
+use App\Jobs\ProcessWhatsAppInboundMedia;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class WhatsAppWebhookController extends Controller
 {
-    public function __construct(
-        private readonly WhatsAppCloudApiService $whatsapp,
-    ) {
-    }
-
     public function verify(Request $request)
     {
         $verifyToken = (string) config('services.whatsapp.verify_token');
@@ -65,30 +60,39 @@ class WhatsAppWebhookController extends Controller
                     $text = $type === 'text' ? data_get($incoming, 'text.body') : '['.ucfirst($type).']';
                     $phone = (string) ($incoming['from'] ?? '');
                     $contact = $contacts->get($phone);
-                    if (in_array($type, ['image', 'video', 'audio', 'document', 'sticker'], true) && ($mediaId = (string) data_get($incoming, $type.'.id')) !== '') {
-                        try {
-                            $media = $this->whatsapp->downloadInboundImage($mediaId, $providerMessageId, $type);
-                            $incoming[$type]['local_path'] = $media['path'];
-                            $incoming[$type]['local_mime_type'] = $media['mime_type'];
-                            $text = (string) data_get($incoming, $type.'.caption', $type === 'sticker' ? '' : '[Imagen]');
-                        } catch (\Throwable $exception) {
-                            Log::error('No se pudo descargar una imagen recibida por WhatsApp', [
-                                'message_id' => $providerMessageId,
-                                'exception' => $exception->getMessage(),
-                            ]);
-                        }
+                    $mediaId = (string) data_get($incoming, $type.'.id', '');
+                    $hasInboundMedia = in_array($type, ['image', 'video', 'audio', 'document', 'sticker'], true)
+                        && $mediaId !== '';
+                    if ($hasInboundMedia) {
+                        $text = (string) data_get($incoming, $type.'.caption', $type === 'sticker' ? '' : '[Imagen]');
                     }
-                    $message = WhatsAppMessage::updateOrCreate(['provider_message_id' => $providerMessageId], [
-                        'phone' => $phone,
-                        'contact_name' => data_get($contact, 'profile.name'),
-                        'direction' => 'inbound', 'message_type' => $type, 'message' => $text,
-                        'status' => 'received', 'source' => 'webhook', 'raw_payload' => $incoming,
-                        'received_at' => isset($incoming['timestamp']) ? now()->setTimestamp((int) $incoming['timestamp']) : now(),
-                    ]);
-                    if ($type === 'text' && trim((string) $message->message) !== '') {
-                        ProcessWhatsAppAutoReply::dispatch($message->id)
-                            ->onConnection('database')
-                            ->delay(now()->addMinute());
+
+                    try {
+                        $message = WhatsAppMessage::updateOrCreate(['provider_message_id' => $providerMessageId], [
+                            'phone' => $phone,
+                            'contact_name' => data_get($contact, 'profile.name'),
+                            'direction' => 'inbound', 'message_type' => $type, 'message' => $text,
+                            'status' => 'received', 'source' => 'webhook', 'raw_payload' => $incoming,
+                            'received_at' => isset($incoming['timestamp']) ? now()->setTimestamp((int) $incoming['timestamp']) : now(),
+                        ]);
+                        if ($hasInboundMedia) {
+                            ProcessWhatsAppInboundMedia::dispatch($message->id, $mediaId, $type)
+                                ->onConnection('database')
+                                ->onQueue('whatsapp-media');
+                        }
+                        if ($type === 'text' && trim((string) $message->message) !== '') {
+                            ProcessWhatsAppAutoReply::dispatch($message->id)
+                                ->onConnection('database')
+                                ->onQueue('whatsapp-incoming')
+                                ->delay(now()->addMinute());
+                        }
+                    } catch (\Throwable $exception) {
+                        Log::error('No se pudo guardar o encolar un mensaje entrante de WhatsApp.', [
+                            'message_id' => $providerMessageId,
+                            'exception' => $exception->getMessage(),
+                        ]);
+
+                        return response()->json(['message' => 'No se pudo procesar el mensaje entrante.'], 503);
                     }
                 }
                 foreach ($value['statuses'] ?? [] as $status) {

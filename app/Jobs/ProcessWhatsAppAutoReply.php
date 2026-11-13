@@ -19,6 +19,7 @@ class ProcessWhatsAppAutoReply implements ShouldQueue
 
     public function __construct(public int $incomingMessageId)
     {
+        $this->onQueue('whatsapp-incoming');
     }
 
     public function handle(WhatsAppAutoReplyService $autoReply): void

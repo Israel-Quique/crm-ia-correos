@@ -30,10 +30,36 @@ class PostarQuoteServiceTest extends TestCase
         Http::assertSent(function ($request) {
             return $request->url() === 'https://postar.correos.gob.bo/api/calcular'
                 && $request->method() === 'POST'
+                && !$request->hasHeader('Authorization')
                 && $request['categoria'] === 'EMS NAT'
                 && $request['destino'] === 'nacional_santa_cruz'
                 && (float) $request['peso'] === 2.0;
         });
+    }
+
+    public function test_envia_las_dimensiones_al_postar_en_la_misma_solicitud_post(): void
+    {
+        Http::fake([
+            'https://postar.correos.gob.bo/api/calcular' => Http::response([
+                'success' => true,
+                'tarifa' => 42.00,
+            ], 200),
+        ]);
+
+        app(PostarQuoteService::class)->quote('EMS NAT', 'nacional_santa_cruz', 2, [
+            'largo' => 30,
+            'ancho' => 20,
+            'alto' => 10,
+        ]);
+
+        Http::assertSent(fn ($request) => $request->method() === 'POST'
+            && $request['categoria'] === 'EMS NAT'
+            && $request['destino'] === 'nacional_santa_cruz'
+            && (float) $request['peso'] === 2.0
+            && (float) $request['largo'] === 30.0
+            && (float) $request['ancho'] === 20.0
+            && (float) $request['alto'] === 10.0
+            && !$request->hasHeader('Authorization'));
     }
 
     public function test_reconoce_el_ultimo_destino_de_una_ruta(): void

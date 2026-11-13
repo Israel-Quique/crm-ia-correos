@@ -53,6 +53,14 @@ class PostalCampaignClassificationTest extends TestCase
             'Ventanilla para recojo',
             $manager->classifyPackage($this->packageWithEvent('other', 'Disponible para entrega en oficina')),
         );
+        $this->assertSame(
+            'Ventanilla para recojo',
+            $manager->classifyPackage($this->packageWithEvent('other', 'Recibido en destino')),
+        );
+        $this->assertSame(
+            'En Camino',
+            $manager->classifyPackage($this->packageWithEvent('other', 'En camino a destino')),
+        );
     }
 
     public function test_it_classifies_courier_and_pickup_statuses_for_international_packages(): void

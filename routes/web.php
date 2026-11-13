@@ -28,6 +28,64 @@ Route::post('/webhooks/whatsapp', [WhatsAppWebhookController::class, 'receive'])
 Route::get('/api/integrations/whatsapp/webhook', [WhatsAppWebhookController::class, 'verify']);
 Route::post('/api/integrations/whatsapp/webhook', [WhatsAppWebhookController::class, 'receive']);
 Route::middleware('auth')->group(function () {
+    Route::get('/auditoria', function () {
+        return view('audit-log-real', [
+            'events' => \App\Models\AuditLog::with('user')->latest()->paginate(13),
+            'legacyEvents' => collect([
+                ['action' => 'Configuración modificada', 'detail' => 'Preferencias del sistema', 'actor' => 'Sistema', 'at' => now()],
+                ['action' => 'IA activada o desactivada', 'detail' => 'Estado del agente local', 'actor' => 'Sistema', 'at' => now()],
+                ['action' => 'Respuesta editada', 'detail' => 'Respuestas automáticas', 'actor' => 'Sistema', 'at' => now()],
+                ['action' => 'Campaña creada', 'detail' => 'Registro de campañas postales', 'actor' => 'Sistema', 'at' => now()],
+                ['action' => 'Mensaje enviado manualmente', 'detail' => 'Desde el módulo de chat', 'actor' => 'Sistema', 'at' => now()],
+                ['action' => 'Campaña reintentada', 'detail' => 'Reenvío de mensajes fallidos', 'actor' => 'Sistema', 'at' => now()],
+            ]),
+        ]);
+    })->name('audit-log');
+    Route::get('/dashboard', function () {
+        $since = now()->subHours(24);
+        $monthStart = now()->startOfMonth();
+        $nextMonthStart = $monthStart->copy()->addMonth();
+        $messages = \App\Models\WhatsAppMessage::query();
+        $unreadMessages = (clone $messages)
+            ->where('direction', 'inbound')
+            ->whereNull('read_at');
+        $activeMessages = (clone $messages)->where('created_at', '>=', $since);
+        $sentMessages = (clone $messages)
+            ->where('direction', 'outbound')
+            ->whereIn('status', ['sent', 'delivered', 'read', 'replied'])
+            ->where('created_at', '>=', $monthStart)
+            ->where('created_at', '<', $nextMonthStart);
+        $runningCampaignQuery = \App\Models\PostalCampaign::whereIn('status', ['running', 'active', 'en curso']);
+        try { $ollamaOnline = \Illuminate\Support\Facades\Http::timeout(1)->get(rtrim(config('services.ollama.url', 'http://127.0.0.1:11434'), '/') . '/api/tags')->successful(); } catch (\Throwable) { $ollamaOnline = false; }
+        return view('dashboard', [
+            'unanswered' => (clone $unreadMessages)->count(),
+            'unreadMessageDetails' => (clone $unreadMessages)->latest('created_at')->limit(5)->get(['contact_name', 'phone', 'message', 'created_at']),
+            'activeConversations' => (clone $activeMessages)->distinct('phone')->count('phone'),
+            'activeInboundCount' => (clone $activeMessages)->where('direction', 'inbound')->count(),
+            'activeOutboundCount' => (clone $activeMessages)->where('direction', 'outbound')->count(),
+            'activeContactDetails' => (clone $activeMessages)
+                ->select('phone')
+                ->selectRaw('MAX(created_at) as last_activity')
+                ->groupBy('phone')
+                ->orderByDesc('last_activity')
+                ->limit(5)
+                ->get(),
+            'sentThisMonth' => (clone $sentMessages)->count(),
+            'sentStatusBreakdown' => (clone $sentMessages)->selectRaw('status, COUNT(*) as total')->groupBy('status')->pluck('total', 'status'),
+            'runningCampaigns' => (clone $runningCampaignQuery)->count(),
+            'runningCampaignDetails' => (clone $runningCampaignQuery)->latest('updated_at')->limit(5)->get(['name', 'status', 'total', 'sent', 'failed', 'pending', 'campaign_type']),
+            'availablePackages' => \App\Models\PostalPackage::count(),
+            'packageSourceBreakdown' => \App\Models\PostalPackage::query()
+                ->selectRaw('source, COUNT(*) as total')
+                ->groupBy('source')
+                ->orderBy('source')
+                ->get(),
+            'lastPackageSync' => \App\Models\PostalPackage::max('last_synced_at'),
+            'apiErrors' => \App\Models\ApiRecord::whereIn('status', ['error', 'failed', 'failure'])->count(),
+            'ollamaOnline' => $ollamaOnline,
+            'activities' => \App\Models\WhatsAppMessage::latest('created_at')->limit(5)->get(),
+        ]);
+    })->name('dashboard');
     Route::post('/logout', function () {
         Auth::logout();
         request()->session()->invalidate();
@@ -37,11 +95,13 @@ Route::middleware('auth')->group(function () {
     Route::post('/api/assistant/chat', [OllamaController::class, 'chat'])->name('assistant.chat');
     Route::view('/assistant', 'assistant')->name('assistant');
     Route::view('/chat-automatizado', 'automated-chat')->name('automated-chat');
+    Route::view('/tarifas', 'tariffs')->name('tariffs');
+    Route::view('/rastreo/nacional', 'postal-tracking', ['scope' => 'nacional'])->name('tracking.national');
+    Route::view('/rastreo/internacional', 'postal-tracking', ['scope' => 'internacional'])->name('tracking.international');
     Route::view('/assistant/seguimiento-nacional', 'prompt-manager', ['aiMode' => 'seguimiento_nacional'])->name('assistant.tracking.national');
     Route::view('/assistant/seguimiento-internacional', 'prompt-manager', ['aiMode' => 'seguimiento_internacional'])->name('assistant.tracking.international');
     Route::view('/assistant/cotizaciones', 'prompt-manager', ['aiMode' => 'cotizaciones'])->name('assistant.quotes');
     Route::view('/chat', 'chat')->name('chat');
-    Route::view('/historial-mensajes', 'whatsapp-message-history')->name('whatsapp.message-history');
     Route::get('/chat/media/{message}', [WhatsAppMediaController::class, 'show'])->name('whatsapp.media');
     Route::view('/automatizacion', 'automation')->name('automation');
     Route::view('/respuestas-automaticas', 'automatic-responses')->name('automatic-responses');
@@ -60,11 +120,20 @@ Route::middleware('auth')->group(function () {
                 ['key' => $key],
                 ['value' => $value ? '1' : '0', 'updated_at' => now()],
             );
+            \App\Models\AuditLog::create([
+                'user_id' => Auth::id(),
+                'action' => $key === 'ai_enabled' ? ($value ? 'IA activada' : 'IA desactivada') : 'Configuración modificada',
+                'category' => $key === 'ai_enabled' ? 'ia' : 'configuracion',
+                'description' => $key === 'ai_enabled' ? 'El agente de inteligencia artificial fue '.($value ? 'activado' : 'desactivado').' desde Configuraciones.' : 'Se modificó la preferencia '.$key.'.',
+                'metadata' => ['setting' => $key, 'value' => (bool) $value],
+                'ip_address' => request()->ip(),
+            ]);
         }
 
         return response()->json(['saved' => true]);
     })->name('settings.preferences');
     Route::post('/configuraciones/sincronizacion', function () { DB::table('app_settings')->updateOrInsert(['key'=>'postal_sync_enabled'], ['value'=>request()->boolean('enabled') ? '1' : '0', 'updated_at'=>now()]); return back()->with('syncSettingSaved', 'Estado de sincronización actualizado.'); })->name('settings.sync');
+    Route::post('/configuraciones/sincronizar-ahora', function (\App\Services\PostalApiSyncService $sync) { $data = request()->validate(['scope' => ['required', 'in:nacional,internacional'], 'from' => ['required', 'date'], 'to' => ['required', 'date', 'after_or_equal:from'], 'force' => ['sometimes', 'boolean']]); try { $result = $sync->sync($data['scope'], 1, $data['from'], $data['to'], $data['force'] ?? false); if ($result['skipped'] ?? false) return back()->with('syncNowMessage', 'Ya hay datos locales para todos los días del rango; no se consultó nuevamente la API. Activa “Forzar actualización” si necesitas volver a consultar.'); return back()->with('syncNowMessage', 'Sincronización '.($data['scope'] === 'nacional' ? 'nacional' : 'internacional').' completada: '.($result['received'] ?? 0).' paquetes recibidos.'); } catch (\Throwable $e) { report($e); return back()->with('syncNowError', 'No se pudo sincronizar: '.$e->getMessage()); } })->name('settings.sync-now');
     Route::view('/pruebas', 'tests')->name('tests');
     Route::view('/campanas-postales/internacional/registro', 'postal-campaign-registry')->name('postal-campaigns.international.registry');
     Route::view('/campanas-postales/nacional/registro', 'postal-campaign-registry', ['scope' => 'nacional'])->name('postal-campaigns.national.registry');
