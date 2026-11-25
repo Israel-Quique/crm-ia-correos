@@ -177,4 +177,5 @@ Route::middleware('auth')->group(function () {
     Route::view('/mensajes-predeterminados/nacional', 'postal-campaign-templates', ['scope' => 'nacional'])->name('postal-campaign-templates.national');
     Route::view('/mensajes-predeterminados/internacional', 'postal-campaign-templates', ['scope' => 'internacional'])->name('postal-campaign-templates.international');
     Route::redirect('/mensajes-predeterminados', '/mensajes-predeterminados/nacional')->name('postal-campaign-templates');
+    Route::view('/plantillas-meta', 'meta-message-templates')->name('meta-message-templates');
 });

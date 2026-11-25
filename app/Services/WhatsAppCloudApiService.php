@@ -12,6 +12,84 @@ use App\Services\WhatsAppTestNumberRegistry;
 
 class WhatsAppCloudApiService
 {
+    public function listMessageTemplates(): array
+    {
+        $this->ensureConfigured();
+
+        $businessAccountId = (string) config('services.whatsapp.business_account_id');
+        if ($businessAccountId === '') {
+            throw new RuntimeException('WhatsApp Cloud API no está configurada: falta business_account_id.');
+        }
+
+        $templates = [];
+        $url = "https://graph.facebook.com/{$this->apiVersion()}/{$businessAccountId}/message_templates";
+        $query = [
+                'limit' => 250,
+                'fields' => 'id,name,language,status,category,components,quality_score,previous_quality_score',
+        ];
+
+        do {
+            $response = $this->authenticatedClient()->get($url, $query)->throw();
+            $templates = array_merge($templates, $response->json('data', []));
+            $next = $response->json('paging.next');
+            $url = is_string($next) && $next !== '' ? $next : null;
+            $query = [];
+        } while ($url !== null);
+
+        return $templates;
+    }
+
+    public function createMessageTemplate(string $name, string $language, string $category, string $body, string $header = '', string $footer = '', string $mediaType = 'NONE'): array
+    {
+        $this->ensureConfigured();
+        $businessAccountId = (string) config('services.whatsapp.business_account_id');
+        if ($businessAccountId === '') {
+            throw new RuntimeException('WhatsApp Cloud API no está configurada: falta business_account_id.');
+        }
+
+        $components = [];
+        if ($mediaType !== 'NONE') {
+            $format = ['IMAGE' => 'IMAGE', 'VIDEO' => 'VIDEO', 'DOCUMENT' => 'DOCUMENT', 'LOCATION' => 'LOCATION'][$mediaType] ?? 'IMAGE';
+            $headerComponent = ['type' => 'HEADER', 'format' => $format];
+            if ($mediaType !== 'LOCATION' && trim($header) !== '') $headerComponent['example'] = ['header_handle' => [$header]];
+            $components[] = $headerComponent;
+        } elseif (trim($header) !== '') {
+            $components[] = ['type' => 'HEADER', 'format' => 'TEXT', 'text' => trim($header)];
+        }
+        $components[] = ['type' => 'BODY', 'text' => $body];
+        if (trim($footer) !== '') $components[] = ['type' => 'FOOTER', 'text' => trim($footer)];
+
+        return $this->authenticatedClient()
+            ->post("https://graph.facebook.com/{$this->apiVersion()}/{$businessAccountId}/message_templates", [
+                'name' => $name,
+                'language' => $language,
+                'category' => $category,
+                'components' => $components,
+            ])
+            ->throw()->json();
+    }
+
+    public function uploadTemplateMedia(string $path, string $mimeType): string
+    {
+        $this->ensureConfigured();
+        $appId = (string) config('services.whatsapp.app_id');
+        if ($appId === '') throw new RuntimeException('WhatsApp Cloud API no está configurada: falta app_id.');
+        $size = filesize($path);
+        if (! is_int($size) || $size < 1) throw new RuntimeException('El archivo multimedia está vacío.');
+        $session = $this->authenticatedClient()->post("https://graph.facebook.com/{$this->apiVersion()}/{$appId}/uploads", [
+            'file_length' => $size, 'file_type' => $mimeType, 'file_name' => basename($path),
+        ])->throw()->json();
+        $uploadId = (string) ($session['id'] ?? '');
+        if ($uploadId === '') throw new RuntimeException('Meta no devolvió una sesión de carga multimedia.');
+        $response = $this->authenticatedClient()->withHeaders(['file_offset' => '0'])
+            ->withBody(file_get_contents($path), $mimeType)
+            ->post("https://graph.facebook.com/{$this->apiVersion()}/{$uploadId}")
+            ->throw()->json();
+        $handle = (string) ($response['h'] ?? $response['handle'] ?? '');
+        if ($handle === '') throw new RuntimeException('Meta no devolvió el identificador multimedia.');
+        return $handle;
+    }
+
     public function downloadInboundImage(string $mediaId, string $messageId, string $mediaType = 'image'): array
     {
         $token = (string) config('services.whatsapp.access_token');
@@ -87,6 +165,30 @@ class WhatsAppCloudApiService
         return $response->json();
     }
 
+    public function sendTemplate(string $to, string $name, string $language = 'es', ?bool $testMode = null, array $parameters = []): array
+    {
+        $this->ensureConfigured();
+        $to = $this->resolveRecipient(preg_replace('/[^0-9]/', '', $to) ?? '', $testMode);
+        if ($to === '' || $name === '') {
+            throw new RuntimeException('La plantilla o el nÃºmero de WhatsApp no son vÃ¡lidos.');
+        }
+
+        $template = ['name' => $name, 'language' => ['code' => $language]];
+        if ($parameters !== []) {
+            $template['components'] = [['type' => 'body', 'parameters' => array_map(fn (string $value): array => ['type' => 'text', 'text' => $value], $parameters)]];
+        }
+        $response = $this->client()->retry(3, 1000, throw: false)->post($this->endpoint(), [
+            'messaging_product' => 'whatsapp',
+            'to' => $to,
+            'type' => 'template',
+            'template' => $template,
+        ]);
+        if ($response->failed()) {
+            throw new RuntimeException((string) data_get($response->json(), 'error.message', 'No se pudo enviar la plantilla por WhatsApp.'));
+        }
+        return $response->json();
+    }
+
     public function sendMedia(string $to, string $path, string $mimeType, bool $testMode = false, ?string $caption = null): array
     {
         $this->ensureConfigured(); $to = $this->resolveRecipient(preg_replace('/[^0-9]/', '', $to) ?? '', $testMode);
@@ -134,12 +236,47 @@ class WhatsAppCloudApiService
     public function sendCampaignMessage(PostalCampaignMessage $message): array
     {
         $originalPhone = $message->phone;
-        $result = $this->sendText((string) $message->phone, $message->message, false);
+        $campaign = $message->campaign;
+        $campaignTemplate = (string) $campaign->template;
+        if ($campaign->campaign_type === 'promocional' && str_starts_with($campaignTemplate, 'meta:')) {
+            [$name, $language, $parameterCount] = array_pad(explode('|', substr($campaignTemplate, 5), 3), 3, '0');
+            if ((int) $parameterCount === 0) {
+                $parameterCount = $this->messageTemplateParameterCount($name, $language);
+            }
+            $package = $message->package;
+            $values = array_values(array_filter([
+                (string) ($package?->recipient ?: 'cliente'),
+                (string) ($package?->tracking_number ?: ''),
+                (string) ($package?->current_event ?: ''),
+                now()->format('d/m/Y'),
+                now()->format('H:i'),
+            ], fn (string $value): bool => $value !== ''));
+            $result = $this->sendTemplate((string) $message->phone, $name, $language, false, array_slice($values, 0, (int) $parameterCount));
+        } else {
+            $result = $this->sendText((string) $message->phone, $message->message, false);
+        }
         $providerId = data_get($result, 'messages.0.id');
         $message->update(['status' => 'sent', 'provider_message_id' => $providerId, 'sent_at' => now(), 'error_message' => null, 'phone' => $originalPhone]);
-        $message->campaign()->increment('sent');
-        $message->campaign()->decrement('pending');
+        $campaign->increment('sent');
+        $campaign->decrement('pending');
         return $result;
+    }
+
+    private function messageTemplateParameterCount(string $name, string $language): int
+    {
+        foreach ($this->listMessageTemplates() as $template) {
+            if (($template['name'] ?? '') !== $name || ($template['language'] ?? '') !== $language) {
+                continue;
+            }
+            foreach (($template['components'] ?? []) as $component) {
+                if (($component['type'] ?? '') !== 'BODY') {
+                    continue;
+                }
+                preg_match_all('/\{\{(\d+)\}\}/', (string) ($component['text'] ?? ''), $matches);
+                return count($matches[1] ?? []);
+            }
+        }
+        return 0;
     }
 
     private function client(): PendingRequest
@@ -161,7 +298,12 @@ class WhatsAppCloudApiService
 
     private function endpoint(): string
     {
-        return 'https://graph.facebook.com/'.config('services.whatsapp.api_version').'/'.config('services.whatsapp.phone_number_id').'/messages';
+        return 'https://graph.facebook.com/'.$this->apiVersion().'/'.config('services.whatsapp.phone_number_id').'/messages';
+    }
+
+    private function apiVersion(): string
+    {
+        return trim((string) config('services.whatsapp.api_version'), '/');
     }
 
     private function ensureConfigured(): void

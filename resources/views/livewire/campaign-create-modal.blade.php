@@ -18,6 +18,27 @@
                 <input wire:model="intervalSeconds" type="number" min="30" class="input">
                 <small>Mínimo 30 segundos; se calcula el ritmo por mensaje.</small>
             </label>
+            <label>
+                Tipo de campaña
+                <select wire:model.live="campaignType" class="input">
+                    <option value="operativa">Operativa (mensaje personalizado)</option>
+                    <option value="promocional">Promocional (plantilla de Meta)</option>
+                </select>
+            </label>
+            @if($campaignType === 'promocional')
+                <label>
+                    Plantilla aprobada de Meta
+                    <select wire:model="selectedMetaTemplate" class="input" required>
+                        <option value="">Selecciona una plantilla</option>
+                        @foreach($metaTemplates as $templateName => $templateLabel)
+                            <option value="{{ $templateName }}">{{ $templateLabel }}</option>
+                        @endforeach
+                    </select>
+                    @if(count($metaTemplates) === 0)
+                        <small>No se encontraron plantillas aprobadas. Verifica la conexión con Meta.</small>
+                    @endif
+                </label>
+            @endif
             <label class="campaign-test-toggle">
                 <input type="checkbox" wire:model.live="testMode">
                 Modo prueba

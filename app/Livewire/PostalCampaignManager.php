@@ -7,6 +7,7 @@ use App\Models\PostalCampaign;
 use App\Models\PostalCampaignTemplate;
 use App\Services\WhatsAppTestNumberRegistry;
 use App\Services\PostalApiSyncService;
+use App\Services\WhatsAppCloudApiService;
 use Livewire\Component;
 use Livewire\WithPagination;
 use Illuminate\Pagination\LengthAwarePaginator;
@@ -27,6 +28,43 @@ class PostalCampaignManager extends Component
     public bool $modalMode = false;
     public array $selectedEvents=[]; public string $eventFilter=''; public string $scope='nacional'; public string $source='all'; public string $from=''; public string $to=''; public int $limit=50; public string $campaignName='Campana postal'; public int $intervalSeconds=30; public bool $testMode=true; public string $template='Hola {recipient}, tu paquete {tracking_number} esta en estado {current_event}.'; public ?int $editingCampaignId=null; public string $editingCampaignName='';
     public string $campaignType = 'operativa';
+    public array $metaTemplates = [];
+    public array $metaTemplateLanguages = [];
+    public array $metaTemplateParameterCounts = [];
+    public string $selectedMetaTemplate = '';
+
+    public function loadMetaTemplates(WhatsAppCloudApiService $whatsapp): void
+    {
+        try {
+            $approved = collect($whatsapp->listMessageTemplates())
+                ->filter(fn (array $template): bool => strtoupper((string) ($template['status'] ?? '')) === 'APPROVED')
+                ->filter(fn (array $template): bool => trim((string) ($template['name'] ?? '')) !== '');
+
+            $this->metaTemplates = $approved->mapWithKeys(fn (array $template): array => [
+                $template['name'] => $template['name'].' · '.($template['language'] ?? 'es'),
+            ])->all();
+            $this->metaTemplateLanguages = $approved->mapWithKeys(fn (array $template): array => [
+                $template['name'] => $template['language'] ?? 'es',
+            ])->all();
+            $this->metaTemplateParameterCounts = $approved->mapWithKeys(function (array $template): array {
+                $body = data_get(collect($template['components'] ?? [])->firstWhere('type', 'BODY'), 'text', '');
+                preg_match_all('/\{\{(\d+)\}\}/', (string) $body, $matches);
+                return [$template['name'] => count($matches[1] ?? [])];
+            })->all();
+        } catch (\Throwable $exception) {
+            report($exception);
+            $this->metaTemplates = [];
+            $this->metaTemplateLanguages = [];
+            $this->metaTemplateParameterCounts = [];
+        }
+    }
+
+    public function updatedCampaignType(string $value): void
+    {
+        if ($value === 'promocional') {
+            $this->loadMetaTemplates(app(WhatsAppCloudApiService::class));
+        }
+    }
 
     public function mount(string $scope='nacional', bool $modalMode = false): void
     {
@@ -657,6 +695,12 @@ class PostalCampaignManager extends Component
             $rules['limit'] = 'required|integer|min:0|max:1000';
         }
         $this->validate($rules);
+        if ($this->campaignType === 'promocional') {
+            $this->validate(['selectedMetaTemplate' => 'required|string|max:512']);
+            $language = $this->metaTemplateLanguages[$this->selectedMetaTemplate] ?? 'es';
+            $parameterCount = $this->metaTemplateParameterCounts[$this->selectedMetaTemplate] ?? 0;
+            $this->template = 'meta:'.$this->selectedMetaTemplate.'|'.$language.'|'.$parameterCount;
+        }
         $this->selectedEvents = $this->eventFilter === '' ? [] : [$this->eventFilter];
         $packages = $this->filteredPackageCollection();
         if (! $this->modalMode) {

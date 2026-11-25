@@ -51,7 +51,17 @@
             <h3>Configuración de campaña</h3>
             <div class="campaign-builder-grid">
                 <label>Nombre de la campaña<input wire:model="campaignName" class="input" placeholder="Campaña postal"></label>
-                <label>Tipo de campaña<select wire:model="campaignType" class="input"><option value="operativa">Operativa</option><option value="promocional">Promocional</option></select></label>
+                <label>Tipo de campaña<select wire:model.live="campaignType" class="input"><option value="operativa">Operativa</option><option value="promocional">Promocional</option></select></label>                @if($campaignType === 'promocional')
+                    <label>Plantilla aprobada de Meta
+                        <select wire:model="selectedMetaTemplate" class="input" required>
+                            <option value="">Selecciona una plantilla</option>
+                            @foreach($metaTemplates as $templateName => $templateLabel)
+                                <option value="{{ $templateName }}">{{ $templateLabel }}</option>
+                            @endforeach
+                        </select>
+                        @if(count($metaTemplates) === 0)<small>No se encontraron plantillas aprobadas de Meta.</small>@endif
+                    </label>
+                @endif
                 <label>Duración total (segundos)<input wire:model="intervalSeconds" type="number" min="30" class="input"><small>Mínimo 30 segundos.</small></label>
             </div>
             <div class="campaign-modal-actions">
