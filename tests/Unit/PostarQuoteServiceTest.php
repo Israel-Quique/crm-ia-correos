@@ -81,4 +81,14 @@ class PostarQuoteServiceTest extends TestCase
             $service->destinationCodeFromText('enviar un paquete desde La Paz a Santa Cruz, peso 7 kilos'),
         );
     }
+
+    public function test_route_parser_respects_direction_when_destination_is_written_first(): void
+    {
+        $service = app(PostarQuoteService::class);
+
+        $this->assertSame([
+            'origin' => 'nacional_santa_cruz',
+            'destination' => 'nacional_cochabamba',
+        ], $service->routeFromText('cotizar envío de 3 kg a Cochabamba desde Santa Cruz'));
+    }
 }

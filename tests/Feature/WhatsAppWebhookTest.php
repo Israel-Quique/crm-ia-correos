@@ -505,6 +505,45 @@ class WhatsAppWebhookTest extends TestCase
         ]);
     }
 
+    public function test_decision_tree_translates_incoming_and_outgoing_messages(): void
+    {
+        $this->setPreference('test_mode', true);
+        $this->setPreference('ai_enabled', false);
+        $this->setPreference('automatic_responses_enabled', true);
+
+        $ollama = Mockery::mock(OllamaService::class);
+        $ollama->shouldReceive('translateToSpanish')
+            ->twice()
+            ->with('I want to quote Delivery Express')
+            ->andReturn('Quiero cotizar Delivery Express');
+        $ollama->shouldReceive('translate')
+            ->once()
+            ->andReturn('Where should the package be sent from Bolivia?');
+        $ollama->shouldNotReceive('chat');
+        $this->app->instance(OllamaService::class, $ollama);
+        Http::fake([
+            'graph.facebook.com/*' => Http::response(['messages' => [['id' => 'wamid.out.translated-flow']]], 200),
+        ]);
+
+        $this->postWebhook($this->incomingPayload(
+            self::TEST_PHONE,
+            'wamid.in.translated-flow',
+            'I want to quote Delivery Express',
+        ))->assertOk();
+        $this->processAutoReply('wamid.in.translated-flow');
+
+        $this->assertDatabaseHas('whatsapp_messages', [
+            'provider_message_id' => 'wamid.out.translated-flow',
+            'message' => 'Where should the package be sent from Bolivia?',
+            'source' => 'automatic_decision_tree',
+        ]);
+        $this->assertDatabaseHas('whatsapp_decision_tree_sessions', [
+            'phone' => self::TEST_PHONE,
+            'flow_key' => 'quote',
+            'step' => 'quote_origin',
+        ]);
+    }
+
     public function test_natural_send_request_trigger_starts_the_quote_tree(): void
     {
         $this->setPreference('test_mode', true);

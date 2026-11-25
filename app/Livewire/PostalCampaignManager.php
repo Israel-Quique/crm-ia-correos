@@ -224,7 +224,6 @@ class PostalCampaignManager extends Component
     {
         $driver = \Illuminate\Support\Facades\DB::connection()->getDriverName();
         $phoneCondition = match ($driver) {
-            'sqlite' => "length(trim(coalesce(%s, ''))) >= 7 AND coalesce(%s, '') glob '*[0-9]*'",
             'mysql', 'mariadb' => "length(trim(coalesce(%s, ''))) >= 7 AND coalesce(%s, '') regexp '[0-9]'",
             default => "length(trim(coalesce(%s, ''))) >= 7 AND coalesce(%s, '') ~ '[0-9]'",
         };
@@ -290,9 +289,10 @@ class PostalCampaignManager extends Component
         }
 
         $jsonPath = '$.'.str_replace('.0.', '[0].', $path);
-        return in_array($driver, ['mysql', 'mariadb'], true)
-            ? "JSON_UNQUOTE(JSON_EXTRACT(raw_payload, '{$jsonPath}'))"
-            : "json_extract(raw_payload, '{$jsonPath}')";
+        return match ($driver) {
+            'mysql', 'mariadb' => "JSON_UNQUOTE(JSON_EXTRACT(raw_payload, '{$jsonPath}'))",
+            default => throw new \LogicException("Unsupported database driver [{$driver}] for postal package JSON extraction."),
+        };
     }
 
     private function departmentForPackage(PostalPackage $package, string $kind): string
@@ -362,9 +362,10 @@ class PostalCampaignManager extends Component
             }
 
             $jsonPath = '$.'.str_replace('.0.', '[0].', $path);
-            return in_array($driver, ['mysql', 'mariadb'], true)
-                ? "JSON_UNQUOTE(JSON_EXTRACT(raw_payload, '{$jsonPath}'))"
-                : "json_extract(raw_payload, '{$jsonPath}')";
+            return match ($driver) {
+                'mysql', 'mariadb' => "JSON_UNQUOTE(JSON_EXTRACT(raw_payload, '{$jsonPath}'))",
+                default => throw new \LogicException("Unsupported database driver [{$driver}] for postal package JSON extraction."),
+            };
         }, $paths);
     }
     private function basePackageCollection(): Collection

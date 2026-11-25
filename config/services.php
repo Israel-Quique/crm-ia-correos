@@ -30,6 +30,8 @@ return [
         'sitra_url' => env('TRACKING_API_URL', 'https://sitra.correos.gob.bo/api/tracking/paquetes'),
         'sitra_token' => env('TRACKING_SQLSERVER_TOKEN'),
         'timeout' => env('POSTAL_API_TIMEOUT', 90),
+        'page_delay_ms' => env('POSTAL_API_PAGE_DELAY_MS', 350),
+        'support_phone' => env('POSTAL_SUPPORT_PHONE', '64229403'),
         'verify_ssl' => filter_var(env('POSTAL_API_VERIFY_SSL', false), FILTER_VALIDATE_BOOLEAN),
     ],
     'cds' => [

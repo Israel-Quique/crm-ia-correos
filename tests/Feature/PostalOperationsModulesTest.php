@@ -37,21 +37,35 @@ class PostalOperationsModulesTest extends TestCase
     {
         $this->actingAs(User::factory()->create());
         $national = $this->createPackage('siop', 'nacional', 'NA123456789');
+        $national->update(['current_event' => 'Sin evento']);
         $otherScope = $this->createPackage('sitra', 'internacional', 'RR123456789XX');
         $event = PostalEvent::create([
             'postal_package_id' => $national->id,
-            'source_event' => '315',
-            'event_name' => 'En distribución',
+            'source_event' => '4409',
+            'event_name' => 'Paquete en camino para entrega física. Asignado a CARTERO por Ana de prueba a Bruno de prueba.',
             'event_at' => now()->subHour(),
+        ]);
+        PostalEvent::create([
+            'postal_package_id' => $national->id,
+            'source_event' => '',
+            'event_name' => '',
+            'event_at' => null,
         ]);
 
         Livewire::test(PostalTrackingManager::class, ['scope' => 'nacional'])
             ->assertSee('NA123456789')
             ->assertDontSee('RR123456789XX')
             ->call('openPackage', $national->id)
-            ->assertSee('En distribución')
-            ->assertSee('315')
+            ->assertSee('Estado del envío')
+            ->assertSee('Cartero')
+            ->assertSee('El paquete fue asignado a un cartero para intentar la entrega.')
+            ->assertSee('Sin movimientos o sin clasificación confiable')
+            ->assertDontSee('Ana de prueba')
+            ->assertDontSee('4477')
+            ->assertDontSee('Código')
             ->call('closePackage')
+            ->assertSet('selectedPackageId', null)
+            ->set('trackingFilter', 'NA123456789')
             ->assertDontSee('tracking-detail-'.$national->id);
 
         $this->assertDatabaseHas('postal_packages', ['id' => $otherScope->id, 'scope' => 'internacional']);
@@ -85,7 +99,7 @@ class PostalOperationsModulesTest extends TestCase
             ->assertSee('NA000000016')
             ->assertDontSee('NA000000002')
             ->assertSee('Mostrando 1–1 de 1')
-            ->set('eventFilter', 'ventanilla')
+            ->set('eventFilter', 'Disponible en ventanilla')
             ->assertSee('NA000000016')
             ->set('trackingFilter', '000016')
             ->assertSee('NA000000016')
@@ -93,6 +107,21 @@ class PostalOperationsModulesTest extends TestCase
             ->assertSee('No se encontraron paquetes')
             ->call('clearTableFilters')
             ->assertSee('Mostrando 1–14 de 16');
+    }
+
+    public function test_tracking_list_excludes_packages_without_update_date(): void
+    {
+        $this->actingAs(User::factory()->create());
+
+        $dated = $this->createPackage('siop', 'nacional', 'NA123456789');
+        $dated->update(['updated_at_api' => now()->subDay()]);
+        $withoutDate = $this->createPackage('siop', 'nacional', 'NA987654321');
+        $withoutDate->update(['updated_at_api' => null]);
+
+        Livewire::test(PostalTrackingManager::class, ['scope' => 'nacional'])
+            ->assertSee('NA123456789')
+            ->assertDontSee('NA987654321')
+            ->assertSee('1 resultados');
     }
 
     public function test_tracking_scope_tabs_keep_national_and_international_packages_separate(): void
@@ -104,13 +133,167 @@ class PostalOperationsModulesTest extends TestCase
         Livewire::test(PostalTrackingManager::class, ['scope' => 'nacional'])
             ->assertSee('NA123456780')
             ->assertDontSee('RR123456780XX')
+            ->assertSee('Clasificación del evento (SIOP)')
+            ->assertSee('códigos de SIOP (nacional)')
             ->set('scope', 'internacional')
             ->assertSee('RR123456780XX')
             ->assertDontSee('NA123456780')
+            ->assertSee('Clasificación del evento (SITRA)')
+            ->assertSee('códigos de SITRA (internacional)')
             ->assertSet('selectedPackageId', null);
 
         $this->assertDatabaseHas('postal_packages', ['id' => $national->id, 'scope' => 'nacional']);
         $this->assertDatabaseHas('postal_packages', ['id' => $international->id, 'scope' => 'internacional']);
+    }
+
+    public function test_tracking_event_filter_includes_no_event_and_only_current_scope_events(): void
+    {
+        $this->actingAs(User::factory()->create());
+        $national = $this->createPackage('siop', 'nacional', 'NA123456781');
+        $national->update(['current_event' => 'En Camino']);
+        PostalEvent::create([
+            'postal_package_id' => $national->id,
+            'source_event' => '168',
+            'event_name' => 'El paquete llegó a una oficina de tránsito internacional',
+            'event_at' => now(),
+        ]);
+        $nationalWithoutEvent = $this->createPackage('siop', 'nacional', 'NA123456782');
+        $nationalWithoutEvent->update(['current_event' => null]);
+        $nationalWithoutEventStatus = $this->createPackage('siop', 'nacional', 'NA123456783');
+        $nationalWithoutEventStatus->update(['current_event' => 'Sin evento']);
+        $nationalWithUnclassifiedCode = $this->createPackage('siop', 'nacional', 'NA123456784');
+        PostalEvent::create([
+            'postal_package_id' => $nationalWithUnclassifiedCode->id,
+            'source_event' => '9999',
+            'event_name' => 'Evento interno sin catálogo',
+            'event_at' => now(),
+        ]);
+        $national297Transit = $this->createPackage('siop', 'nacional', 'NA123456785');
+        PostalEvent::create([
+            'postal_package_id' => $national297Transit->id,
+            'source_event' => '297',
+            'event_name' => 'Paquete recibido en oficina origen de tránsito',
+            'event_at' => now(),
+        ]);
+        $national297Destination = $this->createPackage('siop', 'nacional', 'NA123456786');
+        PostalEvent::create([
+            'postal_package_id' => $national297Destination->id,
+            'source_event' => '297',
+            'event_name' => 'Paquete recibido en oficina de destino',
+            'event_at' => now(),
+        ]);
+        $national297Origin = $this->createPackage('siop', 'nacional', 'NA123456787');
+        PostalEvent::create([
+            'postal_package_id' => $national297Origin->id,
+            'source_event' => '297',
+            'event_name' => 'Paquete recibido del cliente',
+            'event_at' => now(),
+        ]);
+        $nationalPickup = $this->createPackage('siop', 'nacional', 'NA123456788');
+        $nationalPickup->update(['current_event' => 'Disponible para recojo en ventanilla']);
+        $nationalPickupCode = $this->createPackage('siop', 'nacional', 'NA123456789');
+        PostalEvent::create([
+            'postal_package_id' => $nationalPickupCode->id,
+            'source_event' => '312',
+            'event_name' => 'Paquete recibido en oficina de destino',
+            'event_at' => now(),
+        ]);
+        $nationalPastPickup = $this->createPackage('siop', 'nacional', 'NA123456790');
+        PostalEvent::create([
+            'postal_package_id' => $nationalPastPickup->id,
+            'source_event' => '168',
+            'event_name' => 'El paquete sigue en tránsito',
+            'event_at' => now()->subHours(2),
+        ]);
+        PostalEvent::create([
+            'postal_package_id' => $nationalPastPickup->id,
+            'source_event' => '312',
+            'event_name' => 'Disponible para recojo en ventanilla',
+            'event_at' => now()->subHour(),
+        ]);
+        PostalEvent::create([
+            'postal_package_id' => $nationalPastPickup->id,
+            'source_event' => '316',
+            'event_name' => 'Paquete entregado al destinatario',
+            'event_at' => now(),
+        ]);
+
+        $international = $this->createPackage('sitra', 'internacional', 'RR123456781XX');
+        $international->update(['current_event' => 'Entregado']);
+        PostalEvent::create([
+            'postal_package_id' => $international->id,
+            'source_event' => '37',
+            'event_name' => 'Entregado en el país de destino',
+            'event_at' => now(),
+        ]);
+        $internationalPickup = $this->createPackage('sitra', 'internacional', 'RR123456782XX');
+        PostalEvent::create([
+            'postal_package_id' => $internationalPickup->id,
+            'source_event' => '32',
+            'event_name' => 'En oficina postal de entrega',
+            'event_at' => now(),
+        ]);
+
+        Livewire::test(PostalTrackingManager::class, ['scope' => 'nacional'])
+            ->assertSee('<option value="category:En%20Camino">En Camino</option>', false)
+            ->assertSee('<option value="category:Ventanilla">Ventanilla</option>', false)
+            ->assertDontSee('<option value="category:Cancelado">Cancelado</option>', false)
+            ->assertDontSee('<option value="category:Sin%20movimientos%20o%20sin%20clasificaci%C3%B3n%20confiable">Sin movimientos o sin clasificación confiable</option>', false)
+            ->assertDontSee('Aduana')
+            ->assertSee('Recibido Origen')
+            ->set('eventFilter', 'category:'.rawurlencode('En Camino'))
+            ->assertSee('NA123456781')
+            ->assertSee('NA123456785')
+            ->assertDontSee('NA123456786')
+            ->assertDontSee('NA123456782')
+            ->assertDontSee('NA123456790')
+            ->set('eventFilter', 'category:'.rawurlencode('Recibido Destino'))
+            ->assertSee('NA123456786')
+            ->assertDontSee('NA123456785')
+            ->set('eventFilter', 'category:'.rawurlencode('Recibido Origen'))
+            ->assertSee('NA123456787')
+            ->assertDontSee('NA123456786')
+            ->set('eventFilter', 'category:Ventanilla')
+            ->assertSee('NA123456788')
+            ->assertSee('NA123456789')
+            ->assertDontSee('NA123456786')
+            ->assertDontSee('NA123456790')
+            ->set('eventFilter', 'category:Entregado')
+            ->assertSee('NA123456790')
+            ->assertDontSee('NA123456785')
+            ->set('eventFilter', '')
+            ->assertSee('El sistema marca el paquete como entregado.')
+            ->call('openPackage', $nationalPastPickup->id)
+            ->assertSee('Tu paquete ya llegó a la oficina de entrega o destino y está listo para entregar o recoger')
+            ->assertSee('El sistema marca el paquete como entregado.')
+            ->set('eventFilter', 'category:'.rawurlencode('Sin movimientos o sin clasificación confiable'))
+            ->assertSee('Mostrando 1–10 de 10')
+            ->call('openPackage', $nationalWithoutEvent->id)
+            ->assertSee('Sin evento')
+            ->set('scope', 'internacional')
+            ->assertSet('eventFilter', '')
+            ->assertSee('RR123456781XX')
+            ->assertSee('Aduana')
+            ->assertSee('Origen y llegada')
+            ->assertSee('Distribución nacional')
+            ->assertSee('Última milla')
+            ->assertSee('<option value="category:Ventanilla">Ventanilla</option>', false)
+            ->assertDontSee('<option value="category:Importaci%C3%B3n%20detenida">Importación detenida</option>', false)
+            ->assertDontSee('<option value="category:Sin%20movimientos%20o%20sin%20clasificaci%C3%B3n%20confiable">Sin movimientos o sin clasificación confiable</option>', false)
+            ->set('eventFilter', 'category:'.rawurlencode('Importación detenida'))
+            ->assertSee('RR123456781XX')
+            ->assertSee('Mostrando 1–2 de 2')
+            ->set('eventFilter', 'category:'.rawurlencode('Sin movimientos o sin clasificación confiable'))
+            ->assertSee('RR123456781XX')
+            ->assertSee('Mostrando 1–2 de 2')
+            ->set('eventFilter', '__sin_evento__')
+            ->assertSee('RR123456781XX')
+            ->assertSee('Mostrando 1–2 de 2')
+            ->set('eventFilter', 'category:Ventanilla')
+            ->assertSee('RR123456782XX')
+            ->assertDontSee('RR123456781XX')
+            ->assertDontSee('Recibido Origen')
+            ->assertDontSee('NA123456781');
     }
 
     public function test_tracking_module_can_sync_the_selected_national_api(): void

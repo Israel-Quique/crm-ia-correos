@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Models\PostalPackage;
 use App\Services\OllamaService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Http;
@@ -55,7 +56,7 @@ class AgentQuotationSafetyTest extends TestCase
             ],
         );
 
-        $this->assertStringContainsString('Bs. 20.00', $answer);
+        $this->assertStringContainsString('Bs. 22.50', $answer);
         $this->assertStringNotContainsString('Bs. 54.00', $answer);
         $this->assertStringNotContainsString('independientemente', mb_strtolower($answer));
     }
@@ -149,6 +150,35 @@ class AgentQuotationSafetyTest extends TestCase
             '¡Hola! Puedo ayudarte a cotizar un envío postal o rastrear una guía de Correos de Bolivia. ¿Qué necesitas consultar?',
             $answer,
         );
+        Http::assertNothingSent();
+    }
+
+    public function test_tracking_without_events_directs_the_user_to_support_without_calling_the_model(): void
+    {
+        Http::fake();
+        PostalPackage::create([
+            'source' => 'siop',
+            'scope' => 'nacional',
+            'external_id' => 'ollama-track-no-event',
+            'tracking_number' => 'C0001A89911BO',
+            'current_event' => null,
+        ]);
+
+        $answer = app(OllamaService::class)->chat('¿Dónde está mi paquete C0001A89911BO?');
+
+        $this->assertStringContainsString('64229403', $answer);
+        $this->assertStringContainsString('Sin movimientos o sin clasificación confiable', $answer);
+        Http::assertNothingSent();
+    }
+
+    public function test_unfound_tracking_guides_direct_the_user_to_support_without_calling_the_model(): void
+    {
+        Http::fake();
+
+        $answer = app(OllamaService::class)->chat('¿Dónde está mi paquete C0001A89911BO?');
+
+        $this->assertStringContainsString('64229403', $answer);
+        $this->assertStringNotContainsString('sincroniz', mb_strtolower($answer));
         Http::assertNothingSent();
     }
 }

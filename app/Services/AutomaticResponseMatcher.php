@@ -3,13 +3,16 @@
 namespace App\Services;
 
 use App\Models\AutomaticResponse;
-use Illuminate\Support\Str;
 
 class AutomaticResponseMatcher
 {
+    public function __construct(private readonly DecisionTreeInputNormalizer $inputNormalizer)
+    {
+    }
+
     public function match(string $message): ?AutomaticResponse
     {
-        $normalizedMessage = $this->normalize($message);
+        $normalizedMessage = $this->inputNormalizer->normalize($message);
         $best = null;
         $bestScore = 0;
 
@@ -28,7 +31,7 @@ class AutomaticResponseMatcher
         foreach ($responses as $response) {
             $score = 0;
             foreach (array_merge([$response->key, $response->name], $response->trigger_phrases ?? []) as $term) {
-                $normalizedTerm = $this->normalize(str_replace('_', ' ', trim($term)));
+                $normalizedTerm = $this->inputNormalizer->normalize(str_replace('_', ' ', trim($term)));
                 if ($normalizedTerm !== '' && str_contains($normalizedMessage, $normalizedTerm)) {
                     $score = max($score, mb_strlen($normalizedTerm));
                 }
@@ -41,12 +44,5 @@ class AutomaticResponseMatcher
         }
 
         return $best;
-    }
-
-    private function normalize(string $value): string
-    {
-        $normalized = mb_strtolower(Str::ascii($value), 'UTF-8');
-
-        return preg_replace('/\bpauqu?ete\b/u', 'paquete', $normalized) ?? $normalized;
     }
 }

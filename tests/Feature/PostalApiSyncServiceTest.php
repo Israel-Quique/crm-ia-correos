@@ -79,4 +79,62 @@ class PostalApiSyncServiceTest extends TestCase
         $this->assertSame(200, $result['received']);
         Http::assertSentCount(1);
     }
+
+    public function test_sync_follows_all_api_reported_pages_past_page_one_hundred(): void
+    {
+        config(['services.postal.page_delay_ms' => 0]);
+        Http::fake(function ($request) {
+            parse_str(parse_url($request->url(), PHP_URL_QUERY) ?? '', $query);
+            $page = (int) ($query['page'] ?? 0);
+
+            return Http::response([
+                'data' => [[
+                    'id' => "package-{$page}",
+                    'tracking_number' => $page === 101 ? 'C0001A89911BO' : "TRACK{$page}",
+                ]],
+                'meta' => ['current_page' => $page, 'last_page' => 101],
+            ]);
+        });
+
+        $result = app(PostalApiSyncService::class)->sync(
+            'nacional',
+            1,
+            '2026-10-22',
+            '2026-10-22',
+            true,
+        );
+
+        $this->assertSame(101, $result['pages']);
+        $this->assertSame(101, $result['reported_last_page']);
+        $this->assertSame(101, $result['received']);
+        $this->assertDatabaseHas('postal_packages', [
+            'source' => 'siop',
+            'tracking_number' => 'C0001A89911BO',
+        ]);
+        Http::assertSentCount(101);
+    }
+
+    public function test_sync_fails_if_api_repeats_a_page(): void
+    {
+        config(['services.postal.page_delay_ms' => 0]);
+        Http::fake(['*' => Http::response([
+            'data' => [['id' => 'package-1', 'tracking_number' => 'TRACK1']],
+            'meta' => ['current_page' => 1, 'last_page' => 3],
+        ])]);
+
+        try {
+            app(PostalApiSyncService::class)->sync(
+                'nacional',
+                1,
+                '2026-10-22',
+                '2026-10-22',
+                true,
+            );
+            $this->fail('A repeated page should stop the synchronization.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('repitio los datos de la pagina 2', $exception->getMessage());
+        }
+
+        Http::assertSentCount(2);
+    }
 }

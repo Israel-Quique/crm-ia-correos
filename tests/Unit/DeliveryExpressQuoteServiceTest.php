@@ -34,7 +34,7 @@ class DeliveryExpressQuoteServiceTest extends TestCase
 
         $quote = app(DeliveryExpressQuoteService::class)->quote(2, 'nacional_santa_cruz');
 
-        $this->assertSame(15.0, $quote['price']);
+        $this->assertSame(17.5, $quote['price']);
         $this->assertSame('BOB', $quote['currency']);
     }
 
@@ -66,7 +66,7 @@ class DeliveryExpressQuoteServiceTest extends TestCase
             'nacional_la_paz',
         );
 
-        $this->assertSame(15.0, $quote['price']);
+        $this->assertSame(17.5, $quote['price']);
     }
 
     public function test_ignora_peso2_peso3_y_peso_extra_y_usa_peso1(): void
@@ -78,6 +78,12 @@ class DeliveryExpressQuoteServiceTest extends TestCase
 
         $quote = app(DeliveryExpressQuoteService::class)->quote(3, 'nacional_santa_cruz');
 
-        $this->assertSame(20.0, $quote['price']);
+        $this->assertSame(22.5, $quote['price']);
+        $this->assertSame(0, $quote['extra_kilos']);
+
+        $quote = app(DeliveryExpressQuoteService::class)->quote(4, 'nacional_santa_cruz');
+
+        $this->assertSame(32.5, $quote['price']);
+        $this->assertSame(1, $quote['extra_kilos']);
     }
 }

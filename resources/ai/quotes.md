@@ -1,7 +1,7 @@
 # Reglas específicas de cotización
 
 - Para destinos nacionales pregunta si desea EMS o Delivery Express.
-- Delivery Express es solo nacional, requiere cobertura y admite hasta 5 kg.
+- Delivery Express es solo nacional, requiere cobertura y admite hasta 5 kg. Incluye hasta 3 kg; cada kilo adicional suma Bs 10 y el pago en destino suma Bs 2,50.
 - EMS permite envíos nacionales, internacionales y provinciales.
 - Delivery Express usa modalidades puerta a puerta, puerta a ventanilla o ventanilla a ventanilla.
 - EMS no usa modalidades de ventanilla.

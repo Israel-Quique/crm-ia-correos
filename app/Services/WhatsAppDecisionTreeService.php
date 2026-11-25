@@ -4,14 +4,16 @@ namespace App\Services;
 
 use App\Models\AutomaticResponse;
 use App\Models\PostalPackage;
+use App\Models\WhatsAppConversationSetting;
 use App\Models\WhatsAppDecisionTreeSession;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
 use Throwable;
 
 class WhatsAppDecisionTreeService
 {
     private const SESSION_MINUTES = 30;
+
+    private const MAX_TRACKING_ATTEMPTS = 3;
 
     private const INTERNATIONAL_DESTINATIONS = [
         'Argentina', 'Brasil', 'Canadá', 'Chile', 'China', 'Colombia', 'Corea del Sur',
@@ -36,6 +38,9 @@ class WhatsAppDecisionTreeService
     public function __construct(
         private readonly PostarQuoteService $postar,
         private readonly DeliveryExpressQuoteService $deliveryExpress,
+        private readonly PostalTrackingNumberParser $trackingNumberParser,
+        private readonly DecisionTreeInputNormalizer $inputNormalizer,
+        private readonly PackageWeightParser $weightParser,
     ) {
     }
 
@@ -54,10 +59,32 @@ class WhatsAppDecisionTreeService
             $session = null;
         }
 
+        if ($this->isHumanHandoffRequest($message)) {
+            return $this->handoffToHuman($phone);
+        }
+
         if ($session && $this->isCancellation($message)) {
             $session->delete();
 
-            return 'Cancelé el flujo. Escribe «cotizar» o «rastrear» cuando quieras iniciar otra consulta.';
+            return 'Cancelé el flujo. Puedes elegir otra opción: «cotizar», «rastrear» o «hablar con un asesor».';
+        }
+
+        // La solicitud de explicación tiene prioridad sobre saludos y sobre
+        // la detección de intención del paso actual de la cotización.
+        if ($session
+            && $this->isQuoteChoiceQuestion($message)
+            && $session->step !== 'quote_mode') {
+            $this->saveSession($phone, $session->flow_key, $session->step, $session->context ?? []);
+
+            return $this->quoteChoiceExplanation();
+        }
+
+        // Un saludo durante una sesión activa significa que el usuario desea
+        // empezar de nuevo. No debe interpretarse como un dato de cotización.
+        if ($session && $this->isGreeting($message)) {
+            $session->delete();
+
+            return $this->startMenu($phone);
         }
 
         if ($session && $this->isMenuRequest($message)) {
@@ -96,19 +123,33 @@ class WhatsAppDecisionTreeService
             : $this->startTracking($phone, $message, $matchedResponse);
     }
 
+    public function detectIntent(string $message): ?string
+    {
+        return $this->intent($message, null);
+    }
+
     private function intent(string $message, ?AutomaticResponse $response): ?string
     {
+        $normalized = $this->normalizeText($message);
+
+        $hasPackageDetails = preg_match('/\b(detall\w*|informaci[oó]n|datos|nombre|consulta\w*|averiguar|saber|estado|ubicaci[oó]n|rastreo|rastrear|seguimiento)\b/u', $normalized) === 1
+            && preg_match('/\b(paquet\w*|env[ií]o|gu[ií]a)\b/u', $normalized) === 1;
         if (in_array($response?->type, ['quote', 'tracking'], true)) {
             return $response->type;
         }
 
-        $normalized = $this->normalizeText($message);
+        $hasPackageDetails = preg_match('/\b(detall\w*|informaci[oÃ³]n|datos|nombre|consulta\w*|averiguar|saber|estado|ubicaci[oÃ³]n|rastreo|rastrear|seguimiento)\b/u', $normalized) === 1
+            && preg_match('/\b(paquet\w*|env[iÃ­]o|gu[iÃ³]a)\b/u', $normalized) === 1;
 
         $hasShippingVerb = preg_match('/\b(mand\w*|envi\w*|despach\w*)\b/u', $normalized) === 1;
         $hasShipmentNoun = preg_match('/\b(paquet\w*|envio|carta|sobre)\b/u', $normalized) === 1;
-        if (preg_match('/\b(cotiz\w*|precio|tarifa|cuanto cuesta)\b/u', $normalized) === 1
-            || ($hasShippingVerb && $hasShipmentNoun)) {
+        if (preg_match('/\b(cotiz\w*|precio|tarifa|cuanto cuesta|por cuanto)\b/u', $normalized) === 1
+            || ($hasShippingVerb && $hasShipmentNoun && ! $hasPackageDetails)) {
             return 'quote';
+        }
+
+        if ($hasPackageDetails) {
+            return 'tracking';
         }
 
         if (preg_match('/\b(rastre\w*|seguimiento|ubicacion|donde esta|estado de mi paquete|estado del paquete)\b/u', $normalized) === 1) {
@@ -141,6 +182,16 @@ class WhatsAppDecisionTreeService
     private function continueMenu(WhatsAppDecisionTreeSession $session, string $message): string
     {
         $intent = $this->intent($message, null);
+
+        // En el menú principal, una petición de explicación debe conservar la
+        // sesión y explicar las opciones en lugar de tratarla como una opción
+        // inválida o volver a disparar el saludo general.
+        if ($this->isQuoteChoiceQuestion($message)) {
+            $this->saveSession($session->phone, 'menu', 'main_menu', []);
+
+            return $this->quoteChoiceExplanation();
+        }
+
         if ($intent === 'quote' && $this->flowEnabled('quote')) {
             $session->delete();
 
@@ -173,6 +224,16 @@ class WhatsAppDecisionTreeService
             'scope' => $this->quoteScope($message, $response),
             'service' => $this->quoteService($message, $response),
         ];
+        // Si el usuario ya indicó un país, no volvemos a mostrar el menú:
+        // un destino internacional implica EMS Internacional.
+        $initialInternationalDestination = $this->internationalDestinationFromText($message);
+        if ($initialInternationalDestination !== null) {
+            $context['scope'] = 'internacional';
+            $context['service'] = 'ems';
+            $context['origin_name'] = 'Bolivia';
+            $context['destination'] = $initialInternationalDestination['code'];
+            $context['destination_name'] = $initialInternationalDestination['name'];
+        }
         if ($context['scope'] !== null && $context['service'] === null) {
             $context['service'] = 'ems';
         }
@@ -185,6 +246,10 @@ class WhatsAppDecisionTreeService
             $route = $this->nationalRouteFromText($message);
             if ($route !== null) {
                 $context['pending_national_route'] = $route;
+            }
+            $weight = $this->parseWeight($message);
+            if ($weight !== null) {
+                $context['pending_weight'] = $weight;
             }
             $this->saveSession($phone, 'quote', 'quote_scope', $context);
 
@@ -274,6 +339,21 @@ class WhatsAppDecisionTreeService
             case 'quote_service':
                 $service = $this->parseService($message, $context['scope'] ?? null);
                 if ($service === null) {
+                    // Preserve valid quote details that arrive before the service
+                    // selection; the service is still required before continuing.
+                    $route = $this->nationalRouteFromText($message);
+                    if ($route !== null && ($context['scope'] ?? null) === 'nacional') {
+                        $context = array_merge($context, $route, [
+                            'origin_name' => $this->nationalDestinationName($route['origin']),
+                            'destination_name' => $this->nationalDestinationName($route['destination']),
+                        ]);
+                    }
+                    $weight = $this->parseWeight($message);
+                    if ($weight !== null) {
+                        $context['pending_weight'] = $weight;
+                    }
+                    $this->saveSession($session->phone, 'quote', 'quote_service', $context);
+
                     return ($context['scope'] ?? null) === 'nacional'
                         ? 'Responde EMS o Delivery Express.'
                         : 'Para envíos internacionales responde EMS para continuar con EMS INT.';
@@ -287,7 +367,17 @@ class WhatsAppDecisionTreeService
                 );
 
             case 'quote_origin':
-                $codes = $this->postar->destinationCodesFromText($message);
+                $route = $this->nationalRouteFromText($message);
+                if ($route !== null) {
+                    $context = array_merge($context, $route, [
+                        'origin_name' => $this->nationalDestinationName($route['origin']),
+                        'destination_name' => $this->nationalDestinationName($route['destination']),
+                    ]);
+
+                    return $this->askQuoteWeight($session->phone, $context, $message);
+                }
+
+                $codes = $this->postar->destinationCodesFromText($this->normalizeText($message));
                 if ($codes === []) {
                     return 'No reconocí esa ciudad. Indica una ciudad de origen de Bolivia, por ejemplo La Paz o Santa Cruz.';
                 }
@@ -295,16 +385,37 @@ class WhatsAppDecisionTreeService
                 if (count($codes) > 1) {
                     $context['destination'] = $codes[array_key_last($codes)];
 
-                    return $this->askQuoteWeight($session->phone, $context);
+                    return $this->askQuoteWeight($session->phone, $context, $message);
                 }
                 $this->saveSession($session->phone, 'quote', 'quote_destination', $context);
 
                 return '¿A qué ciudad o país se enviará?';
 
             case 'quote_destination':
-                $destination = ($context['scope'] ?? null) === 'internacional'
-                    ? $this->internationalDestinationFromText($message)
-                    : $this->nationalDestinationFromText($message);
+                if (preg_match('/\b(nacional|bolivia)\b/u', $this->normalizeText($message)) === 1
+                    && preg_match('/\b(me confundi|equivoc|no era|nacional)\b/u', $this->normalizeText($message)) === 1) {
+                    unset($context['destination'], $context['destination_name'], $context['pending_national_route']);
+                    $context['scope'] = 'nacional';
+                    $context['service'] = 'ems';
+                    $this->saveSession($session->phone, 'quote', 'quote_origin', $context);
+
+                    return 'Entendido, cambiaré la cotización a nacional. ¿Desde qué ciudad de Bolivia se enviará el paquete?';
+                }
+                if (($context['scope'] ?? null) === 'internacional') {
+                    $destination = $this->internationalDestinationFromText($message);
+                } else {
+                    $route = $this->nationalRouteFromText($message);
+                    if ($route !== null) {
+                        $context['origin'] = $route['origin'];
+                        $context['origin_name'] = $this->nationalDestinationName($route['origin']);
+                        $destination = [
+                            'code' => $route['destination'],
+                            'name' => $this->nationalDestinationName($route['destination']),
+                        ];
+                    } else {
+                        $destination = $this->nationalDestinationFromText($message);
+                    }
+                }
                 if ($destination === null) {
                     return ($context['scope'] ?? null) === 'internacional'
                         ? 'No reconocí el país. Indica el país de destino, por ejemplo Argentina, Chile o España.'
@@ -313,21 +424,24 @@ class WhatsAppDecisionTreeService
                 $context['destination'] = $destination['code'];
                 $context['destination_name'] = $destination['name'];
 
-                return $this->askQuoteWeight($session->phone, $context);
+                return $this->askQuoteWeight($session->phone, $context, $message);
 
             case 'quote_weight':
-                $weight = $this->parseWeight($message);
-                if ($weight === null) {
-                    return 'Indica el peso en kg, por ejemplo 2 kg.';
-                }
-                $context['weight'] = $weight;
-                if (($context['service'] ?? null) === 'delivery_express' && $weight > 5) {
-                    $this->saveSession($session->phone, 'quote', 'quote_oversize', $context);
+                if (preg_match('/\b(nacional|bolivia)\b/u', $this->normalizeText($message)) === 1
+                    && preg_match('/\b(me confundi|equivoc|no era|cambio|nacional)\b/u', $this->normalizeText($message)) === 1) {
+                    unset($context['destination'], $context['destination_name'], $context['pending_national_route']);
+                    $context['scope'] = 'nacional';
+                    $context['service'] = 'ems';
+                    $this->saveSession($session->phone, 'quote', 'quote_origin', $context);
 
-                    return 'Delivery Express admite hasta 5 kg. ¿Quieres continuar con EMS? Responde sí o no.';
+                    return 'Entendido, cambiaré la cotización a nacional. ¿Desde qué ciudad de Bolivia se enviará el paquete?';
+                }
+                $weight = $this->weightParser->parse($message);
+                if ($weight === null || $weight === false) {
+                    return 'Indica un único peso mayor que cero, por ejemplo 2 kg o 500 g. No envíes precios ni varias opciones de peso.';
                 }
 
-                return $this->afterQuoteWeight($session->phone, $context);
+                return $this->acceptQuoteWeight($session->phone, $context, $weight);
 
             case 'quote_oversize':
                 if (! $this->isAffirmative($message)) {
@@ -372,11 +486,13 @@ class WhatsAppDecisionTreeService
     private function askNextQuoteField(string $phone, array $context, string $message): string
     {
         if (($context['scope'] ?? null) === 'nacional') {
-            $codes = $this->postar->destinationCodesFromText($message);
-            if (count($codes) > 1) {
-                $context['origin'] = $codes[0];
-                $context['destination'] = $codes[array_key_last($codes)];
-                return $this->askQuoteWeight($phone, $context);
+            $route = $this->nationalRouteFromText($message);
+            if ($route !== null) {
+                $context = array_merge($context, $route, [
+                    'origin_name' => $this->nationalDestinationName($route['origin']),
+                    'destination_name' => $this->nationalDestinationName($route['destination']),
+                ]);
+                return $this->askQuoteWeight($phone, $context, $message);
             }
             if (($context['origin'] ?? null) === null) {
                 $this->saveSession($phone, 'quote', 'quote_origin', $context);
@@ -410,11 +526,29 @@ class WhatsAppDecisionTreeService
         return $this->askQuoteWeight($phone, $context);
     }
 
-    private function askQuoteWeight(string $phone, array $context): string
+    private function askQuoteWeight(string $phone, array $context, string $message = ''): string
     {
+        $weight = $this->parseWeight($message) ?? ($context['pending_weight'] ?? null);
+        unset($context['pending_weight']);
+        if ($weight !== null) {
+            return $this->acceptQuoteWeight($phone, $context, (float) $weight);
+        }
+
         $this->saveSession($phone, 'quote', 'quote_weight', $context);
 
         return '¿Cuánto pesa el paquete? Indica el peso en kg.';
+    }
+
+    private function acceptQuoteWeight(string $phone, array $context, float $weight): string
+    {
+        $context['weight'] = $weight;
+        if (($context['service'] ?? null) === 'delivery_express' && $weight > 5) {
+            $this->saveSession($phone, 'quote', 'quote_oversize', $context);
+
+            return 'Delivery Express admite hasta 5 kg. Incluye hasta 3 kg; cada kilo adicional suma Bs 10 y el pago en destino suma Bs 2,50. ¿Quieres continuar con EMS? Responde sí o no.';
+        }
+
+        return $this->afterQuoteWeight($phone, $context);
     }
 
     private function afterQuoteWeight(string $phone, array $context): string
@@ -500,7 +634,7 @@ class WhatsAppDecisionTreeService
 
         return $response?->type === 'tracking' && trim($response->template) !== ''
             ? trim($response->template)
-            : 'Envíame el número completo de guía y consultaré el último estado registrado.';
+            : '📦 Envíame el número completo de guía del paquete y consultaré su último estado.';
     }
 
     private function continueTracking(WhatsAppDecisionTreeSession $session, string $message): string
@@ -510,16 +644,46 @@ class WhatsAppDecisionTreeService
         if ($session->step === 'tracking_number') {
             $number = $this->trackingNumber($message);
             if ($number === null) {
-                return 'No reconocí el número de guía. Envíame el código completo, por ejemplo RR123456789XX.';
+                return $this->trackingInputFailure(
+                    $session->phone,
+                    $context,
+                    'No reconocí el formato de la guía.',
+                );
             }
 
             return $this->lookupTracking($session->phone, $context, $number);
         }
 
+        if ($session->step === 'tracking_recovery') {
+            $number = $this->trackingNumber($message);
+            if ($number !== null) {
+                $context = array_intersect_key($context, array_flip(['scope']));
+
+                return $this->lookupTracking($session->phone, $context, $number);
+            }
+
+            $choice = $this->normalizeText($message);
+            if (preg_match('/^\s*(1|otra|otro|nueva|nuevo)\b/u', $choice) === 1) {
+                $context = array_intersect_key($context, array_flip(['scope']));
+                $context['tracking_attempts'] = 0;
+                $this->saveSession($session->phone, 'tracking', 'tracking_number', $context);
+
+                return 'Envíame el número de guía del nuevo paquete.';
+            }
+            if (preg_match('/^\s*2\b/u', $choice) === 1) {
+                return $this->handoffToHuman($session->phone);
+            }
+            if (preg_match('/^\s*3\b/u', $choice) === 1) {
+                return $this->startMenu($session->phone);
+            }
+
+            return "Elige una opción:\n1. Enviar otra guía\n2. Hablar con un asesor\n3. Volver al menú.";
+        }
+
         if ($session->step === 'tracking_scope') {
             $scope = $this->parseScope($message);
             if ($scope === null) {
-                return 'Indica si el envío es nacional o internacional.';
+                return 'Indica si el paquete es nacional o internacional.';
             }
             $context['scope'] = $scope;
 
@@ -557,40 +721,85 @@ class WhatsAppDecisionTreeService
 
         $packages = $query->with('latestEvent')->get();
         if ($packages->isEmpty()) {
-            $this->saveSession($phone, 'tracking', 'tracking_number', $context);
-
-            return "No encontré la guía {$number} en los registros disponibles. Verifica el código y envíamelo nuevamente.";
+            return $this->trackingInputFailure(
+                $phone,
+                $context,
+                "📦 No encontré el paquete con guía {$number} en los registros. Verifica el código y, para confirmar su estado, comunícate al ".config('services.postal.support_phone', '64229403').'.',
+            );
         }
 
         if ($packages->count() > 1 && ! isset($context['scope'])) {
             $context['tracking_number'] = $number;
             $this->saveSession($phone, 'tracking', 'tracking_scope', $context);
 
-            return "Encontré más de un registro con esa guía. ¿El envío es nacional o internacional?";
+            return "📦 Encontré más de un paquete con la guía {$number}. ¿El paquete es nacional o internacional?";
         }
 
         $package = $packages->first();
         $event = $package->latestEvent;
-        $status = trim((string) ($package->current_event ?: $event?->event_name));
-        if ($status === '') {
-            $status = 'En proceso de actualización';
-        }
+        $presenter = app(PostalEventPresenter::class);
+        $eventStatus = trim((string) $event?->event_name);
+        $status = $presenter->isEmptyStatus($eventStatus) ? trim((string) $package->current_event) : $eventStatus;
+        $friendlyStatus = $presenter->currentStatus($package);
+        $eventCategory = $presenter->currentCategory($package);
         $updatedAt = $event?->event_at ?: $package->updated_at_api;
-        $date = $updatedAt ? "\nÚltimo movimiento: ".$updatedAt->format('d/m/Y H:i').'.' : '';
-        $destination = $package->destination_branch ? "\nDestino registrado: {$package->destination_branch}." : '';
-        $eventTemplate = $this->trackingEventTemplate($package->scope, $status, $number);
+        $date = $updatedAt ? "\n🕒 Último movimiento: ".$updatedAt->format('d/m/Y H:i').'.' : '';
+        $destination = $package->destination_branch ? "\n📍 Destino registrado: {$package->destination_branch}." : '';
+        $recipient = $package->recipient ? "\n👤 Destinatario: {$package->recipient}." : '';
+        $sender = $package->sender ? "\n📨 Remitente: {$package->sender}." : '';
         $this->saveSession($phone, 'tracking', 'tracking_another', [
             'scope' => $package->scope,
             'tracking_number' => $number,
         ]);
 
-        if ($eventTemplate !== null) {
-            return $eventTemplate."{$destination}{$date}\n¿Deseas rastrear otra guía? Responde sí o no.";
+        if ($friendlyStatus === null) {
+            return "📦 No encontré movimientos registrados para el paquete con guía {$number}; todavía no puedo confirmar su último estado. Comunícate al ".config('services.postal.support_phone', '64229403')." para más información.\n¿Deseas rastrear otro paquete? Responde sí o no.";
         }
 
-        $statusMessage = $this->trackingStatusMessage($status);
+        $packageStatus = $presenter->packageStatus($friendlyStatus);
+        $eventTemplate = $this->trackingEventTemplate($package->scope, $status, $number);
+        $eventDetails = $eventTemplate === null
+            ? ''
+            : "\n".$presenter->packageStatus($eventTemplate);
 
-        return "Guía {$number} ({$package->scope}): {$statusMessage}\nEstado registrado: {$status}.{$destination}{$date}\n¿Deseas rastrear otra guía? Responde sí o no.";
+        return "📦 El último estado del paquete con guía {$number} es: {$packageStatus}.{$eventDetails}\n🏷️ Clasificación: {$eventCategory}.{$recipient}{$sender}{$destination}{$date}\n¿Deseas rastrear otro paquete? Responde sí o no.";
+    }
+
+    private function trackingInputFailure(string $phone, array $context, string $reason): string
+    {
+        $attempts = (int) ($context['tracking_attempts'] ?? 0) + 1;
+        $context['tracking_attempts'] = $attempts;
+        unset($context['tracking_number']);
+
+        if ($attempts >= self::MAX_TRACKING_ATTEMPTS) {
+            $this->saveSession($phone, 'tracking', 'tracking_recovery', $context);
+
+            return "{$reason}\nYa van {$attempts} intentos. Elige una opción:\n1. Enviar otra guía\n2. Hablar con un asesor\n3. Volver al menú.";
+        }
+
+        $this->saveSession($phone, 'tracking', 'tracking_number', $context);
+
+        return "{$reason} Intento {$attempts} de ".self::MAX_TRACKING_ATTEMPTS.". Envíame el código completo, por ejemplo RR123456789XX o C0001A89911BO.";
+    }
+
+    private function isHumanHandoffRequest(string $message): bool
+    {
+        $normalized = $this->normalizeText($message);
+
+        return preg_match('/\b(asesor|agente|humano|reclamo|representante|operador|persona real)\b/u', $normalized) === 1
+            || preg_match('/\b(hablar con|comunicarme con|atenci[oó]n al cliente|servicio al cliente|ayuda humana|contactar a (?:un|una) persona)\b/u', $normalized) === 1
+            || preg_match('/^\s*ayuda\s*$/u', $normalized) === 1;
+    }
+
+    private function handoffToHuman(string $phone): string
+    {
+        WhatsAppConversationSetting::query()->updateOrCreate(
+            ['phone' => $phone],
+            ['mode' => 'manual'],
+        );
+        WhatsAppDecisionTreeSession::query()->where('phone', $phone)->delete();
+
+        return 'Pausé las respuestas automáticas para que un asesor pueda continuar esta conversación desde el CRM. El equipo responderá por este chat cuando esté disponible.';
     }
 
     private function trackingEventTemplate(string $scope, string $status, string $trackingNumber): ?string
@@ -628,26 +837,6 @@ class WhatsAppDecisionTreeService
         return str_replace('{tracking_number}', $trackingNumber, trim($bestResponse->template));
     }
 
-    private function trackingStatusMessage(string $status): string
-    {
-        $normalized = $this->normalizeText($status);
-
-        if (str_contains($normalized, 'entreg')) {
-            return 'el sistema registra el paquete como entregado.';
-        }
-        if (str_contains($normalized, 'ventanilla') || str_contains($normalized, 'recojo') || str_contains($normalized, 'retiro')) {
-            return 'el paquete figura disponible para recojo en una oficina, según el último registro.';
-        }
-        if (str_contains($normalized, 'aduana') || str_contains($normalized, 'detenid')) {
-            return 'el último registro lo ubica en proceso de aduana o detenido.';
-        }
-        if (str_contains($normalized, 'cartero') || str_contains($normalized, 'reparto') || str_contains($normalized, 'ultima milla')) {
-            return 'el último registro indica que está en la etapa final de distribución.';
-        }
-
-        return 'se encuentra en seguimiento según el último evento disponible.';
-    }
-
     private function quoteScope(string $message, ?AutomaticResponse $response): ?string
     {
         if ($this->normalizeText((string) $response?->key) === 'ems int'
@@ -681,6 +870,10 @@ class WhatsAppDecisionTreeService
     private function parseQuoteChoice(string $message): ?array
     {
         $normalized = $this->normalizeText($message);
+        if (preg_match('/\b(nacional|bolivia|ems nat|ems nacional)\b/u', $normalized) === 1
+            && preg_match('/\b(internacional|ems int|exterior)\b/u', $normalized) !== 1) {
+            return ['scope' => 'nacional', 'service' => 'ems'];
+        }
         if (preg_match('/\b(delivery|express|3)\b/u', $normalized) === 1) {
             return ['scope' => 'nacional', 'service' => 'delivery_express'];
         }
@@ -696,15 +889,7 @@ class WhatsAppDecisionTreeService
 
     private function nationalRouteFromText(string $message): ?array
     {
-        $codes = $this->postar->destinationCodesFromText($message);
-        if (count($codes) < 2) {
-            return null;
-        }
-
-        return [
-            'origin' => $codes[0],
-            'destination' => $codes[array_key_last($codes)],
-        ];
+        return $this->postar->routeFromText($this->normalizeText($message));
     }
 
     private function quoteChoicePrompt(): string
@@ -715,17 +900,19 @@ class WhatsAppDecisionTreeService
     public function quoteChoiceExplanation(): string
     {
         return "Las diferencias son:\n"
-            ."1. Nacional (EMS NAT): para envíos dentro de Bolivia; la tarifa EMS depende del destino y el peso.\n"
-            ."2. Internacional (EMS INT): para envíos desde Bolivia a otro país; la tarifa depende del país de destino y el peso.\n"
-            ."3. Delivery Express: servicio nacional, hasta 5 kg y con una modalidad de entrega requerida.\n\n"
+            ."1) Nacional (EMS NAT): para envíos dentro de Bolivia; la tarifa EMS depende del destino y el peso.\n"
+            ."2) Internacional (EMS INT): para envíos desde Bolivia a otro país; la tarifa depende del país de destino y el peso.\n"
+            ."3) Delivery Express: servicio nacional, hasta 5 kg y con una modalidad de entrega requerida. Incluye hasta 3 kg; cada kilo adicional suma Bs 10 y el pago en destino suma Bs 2,50.\n\n"
             .$this->quoteChoicePrompt();
     }
 
     public function isQuoteChoiceQuestion(string $message): bool
     {
+        $normalized = $this->normalizeText($message);
+
         return preg_match(
-            '/\b(diferenc\w*|cambi\w*|vari\w*|convien\w*|mejor|compar\w*|explic\w*|consist\w*|cosist\w*|signific\w*|describ\w*|quiere decir|que es|que son)\b/u',
-            $this->normalizeText($message),
+            '/\b(diferenc\w*|cambi\w*|vari\w*|convien\w*|mejor|compar\w*|explic\w*|consist\w*|cosist\w*|signific\w*|describ\w*|aclar\w*|detall\w*|opcion\w*|modalidad\w*|quiere decir|que es|que son|cual elegir|cual conviene|me puedes explicar|puedes explicar|podrias explicar)\b/u',
+            $normalized,
         ) === 1;
     }
 
@@ -810,7 +997,7 @@ class WhatsAppDecisionTreeService
 
     private function nationalDestinationFromText(string $message): ?array
     {
-        $codes = $this->postar->destinationCodesFromText($message);
+        $codes = $this->postar->destinationCodesFromText($this->normalizeText($message));
         if ($codes === []) {
             return null;
         }
@@ -819,11 +1006,27 @@ class WhatsAppDecisionTreeService
         return ['code' => $code, 'name' => $this->nationalDestinationName($code)];
     }
 
-    private function internationalDestinationFromText(string $message): ?array
+    public function internationalDestinationFromText(string $message): ?array
     {
         $normalized = $this->normalizeText($message);
         foreach (self::INTERNATIONAL_DESTINATIONS as $destination) {
             if (str_contains($normalized, $this->normalizeText($destination))) {
+                return ['code' => $destination, 'name' => $destination];
+            }
+        }
+
+        // Acepta errores ortográficos frecuentes en el nombre completo del país.
+        $aliases = [
+            'brazil' => 'Brasil', 'brasil' => 'Brasil', 'argentinaa' => 'Argentina',
+            'columbia' => 'Colombia', 'colomibia' => 'Colombia', 'chille' => 'Chile',
+            'peru' => 'Perú', 'paraguai' => 'Paraguay', 'urugay' => 'Uruguay',
+            'venezuelaa' => 'Venezuela', 'mexcio' => 'México', 'mexixo' => 'México',
+            'espana' => 'España', 'franciaa' => 'Francia', 'alemanía' => 'Alemania',
+            'estados unidos' => 'Estados Unidos', 'reino unido' => 'Reino Unido',
+            'costarica' => 'Costa Rica', 'puertorico' => 'Puerto Rico',
+        ];
+        foreach ($aliases as $alias => $destination) {
+            if (str_contains($normalized, $this->normalizeText($alias))) {
                 return ['code' => $destination, 'name' => $destination];
             }
         }
@@ -838,16 +1041,9 @@ class WhatsAppDecisionTreeService
 
     private function parseWeight(string $message): ?float
     {
-        if (preg_match('/(?<!\d)(\d+(?:[.,]\d+)?)\s*(kg|kilos?|kilogramos?|g|gramos?)?/iu', $message, $match) !== 1) {
-            return null;
-        }
+        $weight = $this->weightParser->parse($message);
 
-        $weight = (float) str_replace(',', '.', $match[1]);
-        if (preg_match('/^(g|gramos?)$/iu', $match[2] ?? '') === 1) {
-            $weight /= 1000;
-        }
-
-        return $weight > 0 ? $weight : null;
+        return is_float($weight) ? $weight : null;
     }
 
     public function deliveryModeFromText(string $message): ?string
@@ -864,11 +1060,13 @@ class WhatsAppDecisionTreeService
 
     private function parseDimensions(string $message): array|false|null
     {
-        if (preg_match('/\b(no|omitir|sin dimensiones)\b/u', $this->normalizeText($message)) === 1) {
+        $normalized = $this->normalizeText($message);
+        if (preg_match('/\b(no|nose|omitir|sin dimensiones)\b/u', $normalized) === 1) {
             return null;
         }
 
-        if (preg_match('/(\d+(?:[.,]\d+)?)\s*[x×,]\s*(\d+(?:[.,]\d+)?)\s*[x×,]\s*(\d+(?:[.,]\d+)?)/iu', $message, $matches) !== 1) {
+        $normalizedMessage = preg_replace('/\b(\d{1,3})\.(\d{3})\b/', '$1$2', $message) ?? $message;
+        if (preg_match('/(\d+(?:[.,]\d+)?)\s*[x×,]\s*(\d+(?:[.,]\d+)?)\s*[x×,]\s*(\d+(?:[.,]\d+)?)/iu', $normalizedMessage, $matches) !== 1) {
             return false;
         }
 
@@ -882,13 +1080,7 @@ class WhatsAppDecisionTreeService
 
     private function trackingNumber(string $message): ?string
     {
-        if (preg_match('/(?<![A-Z0-9])([A-Z]{1,3}[\s-]*\d{5,}[\s-]*[A-Z]{0,3})(?![A-Z0-9])/iu', $message, $match) !== 1) {
-            return null;
-        }
-
-        $number = strtoupper(preg_replace('/[^A-Z0-9]/i', '', $match[1]) ?? '');
-
-        return strlen($number) >= 6 ? $number : null;
+        return $this->trackingNumberParser->extract($message);
     }
 
     private function trackingScope(string $message, ?AutomaticResponse $response): ?string
@@ -910,12 +1102,26 @@ class WhatsAppDecisionTreeService
 
     private function isCancellation(string $message): bool
     {
-        return preg_match('/^\s*(cancelar|salir|detener|terminar)\b/u', $this->normalizeText($message)) === 1;
+        $normalized = $this->normalizeText($message);
+
+        return preg_match('/^\s*(cancelar|salir|detener|terminar)\b/u', $normalized) === 1
+            || preg_match('/\b(?:no quiero|no deseo|no necesito|no voy a)\b.*\b(?:cotizar|realizar|hacer)\b/u', $normalized) === 1
+            || preg_match('/\b(?:no quiero|no deseo|no necesito)\b.*\b(?:env[ií]o|envio|paquete)\b/u', $normalized) === 1;
+    }
+
+    private function isGreeting(string $message): bool
+    {
+        $normalized = $this->normalizeText($message);
+
+        return preg_match(
+            '/^\s*(hola|buenas|buenos dias|buenas tardes|buenas noches)(?:[\s,!?.]*(como estas|que tal))?[\s,!?.]*$/u',
+            $normalized,
+        ) === 1;
     }
 
     private function isMenuRequest(string $message): bool
     {
-        return preg_match('/^\s*(menu|menú|inicio)\s*$/iu', trim($message)) === 1;
+        return preg_match('/^\s*(menu|inicio)\s*$/u', $this->normalizeText($message)) === 1;
     }
 
     private function anyFlowEnabled(): bool
@@ -957,8 +1163,6 @@ class WhatsAppDecisionTreeService
 
     private function normalizeText(string $text): string
     {
-        $normalized = mb_strtolower(Str::ascii(trim($text)), 'UTF-8');
-
-        return preg_replace('/\bpauqu?ete\b/u', 'paquete', $normalized) ?? $normalized;
+        return $this->inputNormalizer->normalize($text);
     }
 }

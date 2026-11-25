@@ -8,6 +8,10 @@ use RuntimeException;
 
 class DeliveryExpressQuoteService
 {
+    private const INCLUDED_WEIGHT_KG = 3.0;
+    private const EXTRA_KILO_FEE = 10.0;
+    private const DESTINATION_PAYMENT_FEE = 2.5;
+
     public function quote(float $weight, string $destination, ?string $mode = null, ?string $origin = null): array
     {
         if ($weight <= 0 || $weight > 5) {
@@ -15,7 +19,8 @@ class DeliveryExpressQuoteService
         }
 
         $rates = $this->rates();
-        $rate = collect($rates)->first(function ($item) use ($weight, $destination, $mode, $origin) {
+        $baseWeight = min($weight, self::INCLUDED_WEIGHT_KG);
+        $rate = collect($rates)->first(function ($item) use ($baseWeight, $destination, $mode, $origin) {
             $min = (float) ($item['min_weight_kg'] ?? $item['peso_minimo'] ?? 0);
             $max = (float) ($item['max_weight_kg'] ?? $item['peso_maximo'] ?? 999999);
             $source = str_replace(
@@ -28,7 +33,7 @@ class DeliveryExpressQuoteService
             $originName = str_replace('_', ' ', preg_replace('/^nacional_/', '', $origin ?? ''));
             $destinationName = str_replace('_', ' ', preg_replace('/^nacional_/', '', $destination));
             $text = mb_strtolower((string) json_encode($item, JSON_UNESCAPED_UNICODE), 'UTF-8');
-            return $weight >= $min && $weight <= $max
+            return $baseWeight >= $min && $baseWeight <= $max
                 && (!$origin || str_contains($source, mb_strtolower($originName, 'UTF-8')) || str_contains($text, str_replace('_', ' ', $origin)))
                 && (!$destination || str_contains($target, $destinationName) || str_contains($text, str_replace('_', ' ', $destination)))
                 && (!$mode || str_contains($service, mb_strtolower(str_replace('_', ' ', $mode))));
@@ -39,7 +44,16 @@ class DeliveryExpressQuoteService
         // peso2, peso3 y peso_extra no participan en esta cotización.
         $price = $rate['peso1'] ?? null;
         if (!is_numeric($price)) throw new RuntimeException('La tarifa no contiene un precio válido.');
+        $extraKilos = max(0, (int) ceil($weight - self::INCLUDED_WEIGHT_KG));
+        $price = (float) $price
+            + ($extraKilos * self::EXTRA_KILO_FEE)
+            + self::DESTINATION_PAYMENT_FEE;
         return ['service' => 'Delivery Express', 'price' => (float) $price,
+            'base_price' => (float) ($rate['peso1'] ?? 0),
+            'included_weight_kg' => self::INCLUDED_WEIGHT_KG,
+            'extra_kilos' => $extraKilos,
+            'extra_kilo_fee' => $extraKilos * self::EXTRA_KILO_FEE,
+            'destination_payment_fee' => self::DESTINATION_PAYMENT_FEE,
             'currency' => $rate['currency'] ?? $rate['moneda'] ?? 'BOB', 'rate' => $rate];
     }
 

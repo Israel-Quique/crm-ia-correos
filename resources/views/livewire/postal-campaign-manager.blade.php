@@ -1,5 +1,5 @@
 <div class="content">
-    <div class="welcome"><div><h1>Campañas {{ $scope === 'nacional' ? 'Nacionales' : 'Internacionales' }} ✦</h1><p>Filtra paquetes con teléfono y prepara campañas postales.</p></div></div>
+    <div class="welcome"><div><h1>Campañas {{ $scope === 'nacional' ? 'Nacionales' : 'Internacionales' }}  </h1><p>Filtra paquetes con teléfono y prepara campañas postales.</p></div></div>
     @include('livewire.campaign-create-modal')
     @if (session()->has('campaignCreated'))
         <div class="card" role="status">{{ session('campaignCreated') }}</div>

@@ -302,7 +302,7 @@ class PostalCampaignCreationTest extends TestCase
         $this->assertSame(
             51,
             $campaign->messages()->whereHas('package', function ($query): void {
-                $query->whereRaw("json_extract(raw_payload, '$.destino.departamento') = ?", ['La Paz']);
+                $query->where('raw_payload->destino->departamento', 'La Paz');
             })->count(),
         );
     }

@@ -42,7 +42,12 @@ Route::middleware('auth')->group(function () {
         ]);
     })->name('audit-log');
     Route::get('/dashboard', function () {
-        $since = now()->subHours(24);
+        $period = request()->query('period', 'today');
+        $since = match ($period) {
+            '7d' => now()->subDays(7),
+            '30d' => now()->subDays(30),
+            default => now()->startOfDay(),
+        };
         $monthStart = now()->startOfMonth();
         $nextMonthStart = $monthStart->copy()->addMonth();
         $messages = \App\Models\WhatsAppMessage::query();
@@ -57,6 +62,28 @@ Route::middleware('auth')->group(function () {
             ->where('created_at', '<', $nextMonthStart);
         $runningCampaignQuery = \App\Models\PostalCampaign::whereIn('status', ['running', 'active', 'en curso']);
         try { $ollamaOnline = \Illuminate\Support\Facades\Http::timeout(1)->get(rtrim(config('services.ollama.url', 'http://127.0.0.1:11434'), '/') . '/api/tags')->successful(); } catch (\Throwable) { $ollamaOnline = false; }
+        $packages = \App\Models\PostalPackage::query()->where(function ($query) use ($since) {
+            $query->where('updated_at_api', '>=', $since)
+                ->orWhere('last_synced_at', '>=', $since)
+                ->orWhere('created_at', '>=', $since);
+        });
+        $packageStatus = fn (string $needle) => (clone $packages)->where('current_event', 'like', '%'.$needle.'%')->count();
+        $deliveredPackages = $packageStatus('Entregado');
+        $customsPackages = $packageStatus('Aduana');
+        $returnedPackages = $packageStatus('Devuelto');
+        $inTransitPackages = max(0, (clone $packages)->count() - $deliveredPackages - $customsPackages - $returnedPackages);
+        $destinationName = static function ($package): ?string {
+            $payload = is_array($package->raw_payload) ? $package->raw_payload : [];
+            $name = $package->destination_branch
+                ?: data_get($payload, 'destino.departamento')
+                ?: data_get($payload, 'destino.nombre_destino')
+                ?: data_get($payload, 'destino.nombre')
+                ?: data_get($payload, 'destino.ciudad')
+                ?: (is_string(data_get($payload, 'destino')) ? data_get($payload, 'destino') : null);
+            return $name ? trim((string) $name) : null;
+        };
+        $topNationalDestinations = (clone $packages)->where('scope', 'nacional')->get(['destination_branch', 'raw_payload'])->map(fn ($package) => $destinationName($package))->filter()->countBy()->sortDesc()->take(3)->map(fn ($total, $destination) => (object) ['destination_branch' => $destination, 'total' => $total])->values();
+        $topInternationalDestinations = (clone $packages)->where('scope', 'internacional')->get(['destination_branch', 'raw_payload'])->map(fn ($package) => $destinationName($package))->filter()->countBy()->sortDesc()->take(3)->map(fn ($total, $destination) => (object) ['destination_branch' => $destination, 'total' => $total])->values();
         return view('dashboard', [
             'unanswered' => (clone $unreadMessages)->count(),
             'unreadMessageDetails' => (clone $unreadMessages)->latest('created_at')->limit(5)->get(['contact_name', 'phone', 'message', 'created_at']),
@@ -83,7 +110,14 @@ Route::middleware('auth')->group(function () {
             'lastPackageSync' => \App\Models\PostalPackage::max('last_synced_at'),
             'apiErrors' => \App\Models\ApiRecord::whereIn('status', ['error', 'failed', 'failure'])->count(),
             'ollamaOnline' => $ollamaOnline,
-            'activities' => \App\Models\WhatsAppMessage::latest('created_at')->limit(5)->get(),
+            'activities' => (clone $messages)->where('created_at', '>=', $since)->latest('created_at')->limit(5)->get(),
+            'period' => $period,
+            'deliveredPackages' => $deliveredPackages,
+            'inTransitPackages' => $inTransitPackages,
+            'customsPackages' => $customsPackages,
+            'returnedPackages' => $returnedPackages,
+            'topNationalDestinations' => $topNationalDestinations,
+            'topInternationalDestinations' => $topInternationalDestinations,
         ]);
     })->name('dashboard');
     Route::post('/logout', function () {
@@ -94,7 +128,7 @@ Route::middleware('auth')->group(function () {
     })->name('logout');
     Route::post('/api/assistant/chat', [OllamaController::class, 'chat'])->name('assistant.chat');
     Route::view('/assistant', 'assistant')->name('assistant');
-    Route::view('/chat-automatizado', 'automated-chat')->name('automated-chat');
+    Route::redirect('/chat-automatizado', '/automatizacion');
     Route::view('/tarifas', 'tariffs')->name('tariffs');
     Route::view('/rastreo/nacional', 'postal-tracking', ['scope' => 'nacional'])->name('tracking.national');
     Route::view('/rastreo/internacional', 'postal-tracking', ['scope' => 'internacional'])->name('tracking.international');

@@ -17,6 +17,10 @@ class ProcessWhatsAppAutoReply implements ShouldQueue
     use Queueable;
     use SerializesModels;
 
+    public int $tries = 3;
+
+    public array $backoff = [10, 30];
+
     public function __construct(public int $incomingMessageId)
     {
         $this->onQueue('whatsapp-incoming');

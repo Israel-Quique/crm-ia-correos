@@ -6,7 +6,7 @@
 @php($syncIsFresh = fn ($package) => $syncEnabled)
 @section('content')
 <main class="content settings-page">
-<div class="welcome"><div><h1>Configuraciones ✦</h1><p>Controla el comportamiento del CRM y revisa las actualizaciones de paquetes.</p></div></div>
+<div class="welcome"><div><h1>Configuraciones  </h1><p>Controla el comportamiento del CRM y revisa las actualizaciones de paquetes.</p></div></div>
 <div class="settings-grid">
 @include('components.system-preferences')
 <section class="card settings-card services"><div class="settings-heading"><div class="settings-icon">⌘</div><div><h2>Estado de servicios</h2><p>Conexiones utilizadas por Conversa OS.</p></div></div><div class="service-status-grid"><div class="service-status"><div class="status-ring green">◉</div><strong>Base de datos PostgreSQL</strong><b>– Conectada</b></div><div class="service-status"><div class="status-ring green">AI</div><strong>Ollama Local</strong><b>– Activa</b></div><div class="service-status"><div class="status-ring yellow">API</div><strong>Sincronización API</strong><b>– Programada</b></div></div><div class="service-info"><span>Modelo configurado:</span><strong>llama3.2:3b</strong><span>Sincronización automática:</span><strong>cada 5 minutos</strong></div></section>

@@ -6,7 +6,7 @@
             <button type="button" class="secondary-btn {{ $activeTab === 'ems' ? 'is-active' : '' }}" wire:click="$set('activeTab', 'ems')">EMS · Consultar tarifa</button>
         </div>
         @if($activeTab === 'delivery')
-            <div class="card-title"><div><h2>Tarifas de Delivery Express</h2><p>Datos consultados directamente desde el tarifario del proveedor. Este módulo no modifica sus tarifas.</p></div><button type="button" class="primary-btn" wire:click="loadDeliveryRates" wire:loading.attr="disabled" wire:target="loadDeliveryRates"><span wire:loading.remove wire:target="loadDeliveryRates">Consultar API</span><span wire:loading wire:target="loadDeliveryRates">Consultando…</span></button></div>
+            <div class="card-title"><div><h2>Tarifas de Delivery Express</h2><p>Datos consultados directamente desde el tarifario del proveedor. La cotización incluye hasta 3 kg; cada kilo adicional suma Bs 10 y el pago en destino suma Bs 2,50. Este módulo no modifica sus tarifas.</p></div><button type="button" class="primary-btn" wire:click="loadDeliveryRates" wire:loading.attr="disabled" wire:target="loadDeliveryRates"><span wire:loading.remove wire:target="loadDeliveryRates">Consultar API</span><span wire:loading wire:target="loadDeliveryRates">Consultando…</span></button></div>
             @if($ratesError)<div class="operation-alert error" role="alert">{{ $ratesError }}</div>@endif
             @if($ratesLoadedAt)<div class="operation-alert success" role="status">Consulta realizada: {{ $ratesLoadedAt }} · {{ count($deliveryRates) }} tarifas recibidas.</div>@endif
             @if($deliveryRates)

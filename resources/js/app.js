@@ -53,22 +53,22 @@ body{background:#fffbeb;color:#0b192c}
 .app-shell .content nav[role="navigation"] a,.app-shell .content nav[role="navigation"] button,.app-shell .content .delivery-rates-pagination nav a,.app-shell .content .delivery-rates-pagination nav button{border-color:#eab308!important;border-radius:8px!important;color:#0b192c!important}
 .app-shell .content nav[role="navigation"] a[aria-current="page"],.app-shell .content nav[role="navigation"] button[aria-current="page"]{background:#0b192c!important;color:#facc15!important}
 .app-shell .chat-content{background:transparent!important}
-.app-shell .chat-list,.app-shell .contact-profile,.app-shell .automated-test-chat{background:#fff!important;border-color:#eab308!important}
+.app-shell .chat-list,.app-shell .contact-profile{background:#fff!important;border-color:#eab308!important}
 .app-shell .conversation{background:#fffbeb!important;border-color:#eab308!important}
-.app-shell .chat-list-head,.app-shell .conversation-head,.app-shell .contact-profile-head,.app-shell .contact-profile-identity,.app-shell .automated-chat-head,.app-shell .automated-chat-controls{background:#fff!important;border-color:#fde68a!important}
-.app-shell .chat-list-head h2,.app-shell .conversation-head strong,.app-shell .contact-profile-title,.app-shell .contact-profile-identity strong,.app-shell .automated-chat-head strong{color:#0b192c!important}
+.app-shell .chat-list-head,.app-shell .conversation-head,.app-shell .contact-profile-head,.app-shell .contact-profile-identity{background:#fff!important;border-color:#fde68a!important}
+.app-shell .chat-list-head h2,.app-shell .conversation-head strong,.app-shell .contact-profile-title,.app-shell .contact-profile-identity strong{color:#0b192c!important}
 .app-shell .chat-tabs .chat-tab.active{background:#0b192c!important;border-color:#0b192c!important;color:#facc15!important}
 .app-shell .chat-tabs .chat-tab:not(.active),.app-shell .conversation-mode{border-color:#eab308!important;color:#0b192c!important}
 .app-shell .chat-tabs .chat-tab:not(.active){background:#fffbeb!important}
 .app-shell .conversation-mode.active,.app-shell .conversation-mode:hover,.app-shell .thread:hover,.app-shell .thread.selected{background:#fef3c7!important;border-color:#eab308!important;color:#0b192c!important}
 .app-shell .thread{border-bottom-color:#fde68a!important}
 .app-shell .contact-avatar,.app-shell .contact-media-icon{background:#fef3c7!important;color:#0b192c!important}
-.app-shell .messages,.app-shell .automated-chat-messages,.app-shell .ai-chat-messages{background:#fffbeb!important}
-.app-shell .message.out,.app-shell .automated-message.user,.app-shell .ai-message.ai-user{background:#0b192c!important;color:#fff!important}
-.app-shell .message.in,.app-shell .automated-message.bot,.app-shell .ai-message.ai-agent{background:#fff!important;border-color:#fde68a!important;color:#172b45!important}
+.app-shell .messages,.app-shell .ai-chat-messages{background:#fffbeb!important}
+.app-shell .message.out,.app-shell .ai-message.ai-user{background:#0b192c!important;color:#fff!important}
+.app-shell .message.in,.app-shell .ai-message.ai-agent{background:#fff!important;border-color:#fde68a!important;color:#172b45!important}
 .app-shell .chat-composer,.app-shell .ai-composer{background:#fff!important;border-color:#fde68a!important}
 .app-shell .chat-attach{background:#fffbeb!important;border-color:#eab308!important;color:#0b192c!important}
-.app-shell .automated-empty strong,.app-shell .ai-empty strong{color:#0b192c!important}
+.app-shell .ai-empty strong{color:#0b192c!important}
 .app-shell .topbar{height:58px!important;min-height:58px;padding:0 20px!important;background:#0b192c!important;border-bottom:2px solid #1e293b!important;color:#fff}
 .app-shell .topbar .search{width:min(280px,38vw)!important;background:#fff!important;border:1px solid #eab308!important;border-radius:999px!important;color:#52657e!important;padding:9px 14px!important}
 .app-shell .topbar .profile{border-color:#334155}
@@ -553,18 +553,6 @@ body:not(.night-mode) .app-shell .content .template-chat-message{background:#334
 body:not(.night-mode) .app-shell .content .template-chat-message>small{color:#bac6d0!important}
 body:not(.night-mode) .app-shell .content .template-quick-tags button{background:#384956!important;border-color:#526373!important;color:#f3d38c!important}
 body:not(.night-mode) .app-shell .content .template-live-badge{background:#183c36!important;border-color:#286b5b!important;color:#a7f3d0!important}
-body:not(.night-mode) .app-shell .content .automated-test-chat{background:#283542!important;border-color:#455767!important;color:#e2e8f0!important}
-body:not(.night-mode) .app-shell .content .automated-chat-head,
-body:not(.night-mode) .app-shell .content .automated-chat-controls{background:#19222b!important;border-color:#455767!important;color:#e2e8f0!important}
-body:not(.night-mode) .app-shell .content .automated-chat-head strong,
-body:not(.night-mode) .app-shell .content .automated-empty strong{color:#f1f5f9!important}
-body:not(.night-mode) .app-shell .content .automated-chat-head small,
-body:not(.night-mode) .app-shell .content .automated-empty,
-body:not(.night-mode) .app-shell .content .automated-message small{color:#bac6d0!important}
-body:not(.night-mode) .app-shell .content .automated-chat-messages{background:#1f2a34!important}
-body:not(.night-mode) .app-shell .content .automated-message.bot{background:#334352!important;border-color:#526373!important;color:#e2e8f0!important}
-body:not(.night-mode) .app-shell .content .automated-message.user{background:#dfaa43!important;color:#19222b!important}
-body:not(.night-mode) .app-shell .content .automated-error{color:#fca5a5!important}
 body:not(.night-mode) .app-shell .content .ai-chat-header,
 body:not(.night-mode) .app-shell .content .ai-composer{background:#19222b!important;border-color:#455767!important}
 body:not(.night-mode) .app-shell .content .ai-chat-header h3,
@@ -664,21 +652,21 @@ body.night-mode .app-shell .content .card,body.night-mode .app-shell .content.po
     body.night-mode .app-shell .content .custom-sync-grid label{color:#cbd5e1}
     body.night-mode .app-shell .content nav[role="navigation"] a,body.night-mode .app-shell .content nav[role="navigation"] button{border-color:#405472!important;background:#16243a;color:#e2e8f0!important}
     body.night-mode .app-shell .content nav[role="navigation"] a[aria-current="page"],body.night-mode .app-shell .content nav[role="navigation"] button[aria-current="page"]{background:#facc15!important;color:#0b192c!important}
-    body.night-mode .app-shell .chat-list,body.night-mode .app-shell .contact-profile,body.night-mode .app-shell .automated-test-chat{background:#111f37!important;border-color:#334766!important;color:#e2e8f0}
+    body.night-mode .app-shell .chat-list,body.night-mode .app-shell .contact-profile{background:#111f37!important;border-color:#334766!important;color:#e2e8f0}
     body.night-mode .app-shell .conversation{background:#0b1426!important;border-color:#334766!important}
-    body.night-mode .app-shell .chat-list-head,body.night-mode .app-shell .conversation-head,body.night-mode .app-shell .contact-profile-head,body.night-mode .app-shell .contact-profile-identity,body.night-mode .app-shell .automated-chat-head,body.night-mode .app-shell .automated-chat-controls{background:#111f37!important;border-color:#334766!important}
-    body.night-mode .app-shell .chat-list-head h2,body.night-mode .app-shell .conversation-head strong,body.night-mode .app-shell .contact-profile-title,body.night-mode .app-shell .contact-profile-identity strong,body.night-mode .app-shell .automated-chat-head strong{color:#f8fafc!important}
+    body.night-mode .app-shell .chat-list-head,body.night-mode .app-shell .conversation-head,body.night-mode .app-shell .contact-profile-head,body.night-mode .app-shell .contact-profile-identity{background:#111f37!important;border-color:#334766!important}
+    body.night-mode .app-shell .chat-list-head h2,body.night-mode .app-shell .conversation-head strong,body.night-mode .app-shell .contact-profile-title,body.night-mode .app-shell .contact-profile-identity strong{color:#f8fafc!important}
     body.night-mode .app-shell .chat-tabs .chat-tab.active{background:#facc15!important;border-color:#eab308!important;color:#0b192c!important}
     body.night-mode .app-shell .chat-tabs .chat-tab:not(.active),body.night-mode .app-shell .conversation-mode{background:#16243a!important;border-color:#405472!important;color:#e2e8f0!important}
     body.night-mode .app-shell .conversation-mode.active,body.night-mode .app-shell .conversation-mode:hover,body.night-mode .app-shell .thread:hover,body.night-mode .app-shell .thread.selected{background:#3b2d12!important;border-color:#ca8a04!important;color:#fef3c7!important}
     body.night-mode .app-shell .thread{border-bottom-color:#334766!important;color:#e2e8f0}
     body.night-mode .app-shell .contact-avatar,body.night-mode .app-shell .contact-media-icon{background:#1e3a8a!important;color:#facc15!important}
-    body.night-mode .app-shell .messages,body.night-mode .app-shell .automated-chat-messages,body.night-mode .app-shell .ai-chat-messages{background:#0b1426!important}
-    body.night-mode .app-shell .message.out,body.night-mode .app-shell .automated-message.user,body.night-mode .app-shell .ai-message.ai-user{background:#facc15!important;color:#0b192c!important}
-    body.night-mode .app-shell .message.in,body.night-mode .app-shell .automated-message.bot,body.night-mode .app-shell .ai-message.ai-agent{background:#172640!important;border-color:#334766!important;color:#e2e8f0!important}
+    body.night-mode .app-shell .messages,body.night-mode .app-shell .ai-chat-messages{background:#0b1426!important}
+    body.night-mode .app-shell .message.out,body.night-mode .app-shell .ai-message.ai-user{background:#facc15!important;color:#0b192c!important}
+    body.night-mode .app-shell .message.in,body.night-mode .app-shell .ai-message.ai-agent{background:#172640!important;border-color:#334766!important;color:#e2e8f0!important}
     body.night-mode .app-shell .chat-composer,body.night-mode .app-shell .ai-composer{background:#111f37!important;border-color:#334766!important}
     body.night-mode .app-shell .chat-attach{background:#16243a!important;border-color:#405472!important;color:#facc15!important}
-    body.night-mode .app-shell .automated-empty strong,body.night-mode .app-shell .ai-empty strong{color:#f8fafc!important}
+    body.night-mode .app-shell .ai-empty strong{color:#f8fafc!important}
 body.night-mode .app-shell .content .card-title h2,body.night-mode .app-shell .content .card-title h3,body.night-mode .app-shell .content .settings-heading h2{color:#f8fafc!important}
 body.night-mode .app-shell .content .card-title p,body.night-mode .app-shell .content .card-title small,body.night-mode .app-shell .content .filter-help{color:#b7c4d8!important}
 body.night-mode .app-shell .content input:not([type=checkbox]):not([type=radio]),body.night-mode .app-shell .content select,body.night-mode .app-shell .content textarea,body.night-mode .app-shell .content .input{background:#0b192c!important;color:#f8fafc!important;border-color:#526987!important}
@@ -785,7 +773,7 @@ body.night-mode .app-shell .topbar .profile{border-color:#334766}
 
 if (document.querySelector('.dashboard-grid') && localStorage.getItem('crm-aiMode') !== 'false') {
     const assistant = document.createElement('button');
-    assistant.textContent = '✦ Asistente IA';
+    assistant.textContent = '  Asistente IA';
     assistant.className = 'primary-btn';
     assistant.style.cssText = 'position:fixed;right:22px;bottom:22px;z-index:20';
     document.body.appendChild(assistant);

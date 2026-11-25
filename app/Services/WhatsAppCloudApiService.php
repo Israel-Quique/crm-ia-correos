@@ -71,7 +71,7 @@ class WhatsAppCloudApiService
         if ($to === '') throw new RuntimeException('El número de WhatsApp está vacío o no es válido.');
         $to = $this->resolveRecipient($to, $testMode, $testRecipient);
 
-        $response = $this->client()->post($this->endpoint(), [
+        $response = $this->client()->retry(3, 1000, throw: false)->post($this->endpoint(), [
             'messaging_product' => 'whatsapp',
             'recipient_type' => 'individual',
             'to' => $to,

@@ -120,6 +120,7 @@ class WhatsAppAutoReplyService
 
         $combinedMessage = $claimedMessages->pluck('message')->implode("\n");
         $responseLanguage = $this->language->detect($combinedMessage);
+        $spanishMessage = $this->translateToSpanish($combinedMessage, $responseLanguage);
         $claimedIds = $claimedMessages->modelKeys();
         $history = WhatsAppMessage::query()
             ->where('phone', $incoming->phone)
@@ -138,6 +139,16 @@ class WhatsAppAutoReplyService
             ])
             ->values()
             ->all();
+        $history = array_map(
+            fn (array $message): array => [
+                ...$message,
+                'text' => $this->translateToSpanish(
+                    (string) ($message['text'] ?? ''),
+                    $this->language->detect((string) ($message['text'] ?? '')),
+                ),
+            ],
+            $history,
+        );
 
         try {
             $reply = null;
@@ -147,7 +158,10 @@ class WhatsAppAutoReplyService
 
             if ($automaticResponsesEnabled) {
                 foreach ($claimedMessages->reverse() as $message) {
-                    $candidate = $this->responseMatcher->match($message->message);
+                    $candidate = $this->responseMatcher->match($this->translateToSpanish(
+                        $message->message,
+                        $this->language->detect($message->message),
+                    ));
                     $matchedResponse ??= $candidate;
                     if (in_array($candidate?->type, ['quote', 'tracking'], true)) {
                         $matchedWorkflow = $candidate;
@@ -157,7 +171,7 @@ class WhatsAppAutoReplyService
 
                 $reply = $this->decisionTree->replyTo(
                     $replyRecipient,
-                    $combinedMessage,
+                    $spanishMessage,
                     $matchedWorkflow ?? $matchedResponse,
                 );
                 if ($reply !== null) {
@@ -176,19 +190,23 @@ class WhatsAppAutoReplyService
 
             if ($reply === null && $aiEnabled) {
                 $reply = $responseLanguage === 'es'
-                    ? $this->ollama->chat($combinedMessage, $history, 'general')
-                    : $this->ollama->chat($combinedMessage, $history, 'general', $responseLanguage);
+                    ? $this->ollama->chat($spanishMessage, $history, 'general')
+                    : $this->ollama->chat($spanishMessage, $history, 'general', 'es');
             } elseif ($reply === null && $automaticResponsesEnabled) {
                 $replySource = 'automatic';
 
                 if ($matchedWorkflow || $this->isPostalWorkflowContinuation($history)) {
                     $reply = $responseLanguage === 'es'
-                        ? $this->ollama->chat($combinedMessage, $history, 'general')
-                        : $this->ollama->chat($combinedMessage, $history, 'general', $responseLanguage);
+                        ? $this->ollama->chat($spanishMessage, $history, 'general')
+                        : $this->ollama->chat($spanishMessage, $history, 'general', 'es');
                     $replySource = 'automatic_workflow';
                 } else {
                     foreach ($claimedMessages->reverse() as $message) {
-                        $reply = $this->responseMatcher->match($message->message)?->template;
+                        $messageSpanish = $this->translateToSpanish(
+                            $message->message,
+                            $this->language->detect($message->message),
+                        );
+                        $reply = $this->responseMatcher->match($messageSpanish)?->template;
                         if ($reply !== null) {
                             break;
                         }
@@ -237,6 +255,25 @@ class WhatsAppAutoReplyService
         $value = DB::table('app_settings')->where('key', $key)->value('value');
 
         return filter_var($value ?? '1', FILTER_VALIDATE_BOOLEAN);
+    }
+
+    private function translateToSpanish(string $text, string $language): string
+    {
+        $text = trim($text);
+        if ($text === '' || $language === 'es') {
+            return $text;
+        }
+
+        try {
+            return $this->ollama->translateToSpanish($text);
+        } catch (Throwable $exception) {
+            Log::warning('No se pudo traducir el mensaje entrante al español.', [
+                'language' => $language,
+                'exception' => $exception->getMessage(),
+            ]);
+
+            return $text;
+        }
     }
 
     private function normalizePhone(string $phone): string

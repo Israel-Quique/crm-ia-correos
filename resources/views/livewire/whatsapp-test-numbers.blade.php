@@ -1,7 +1,7 @@
 <div class="content test-numbers-page">
     <div class="welcome">
         <div>
-            <h1>Números de prueba ✦</h1>
+            <h1>Números de prueba  </h1>
             <p>Administra contactos para probar campañas y respuestas automáticas sin escribir a clientes.</p>
         </div>
     </div>
