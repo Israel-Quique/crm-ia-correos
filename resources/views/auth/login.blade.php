@@ -32,16 +32,21 @@
                 @if ($errors->any())<div class="login-error">{{ $errors->first() }}</div>@endif
                 <form method="POST" action="{{ route('login.store') }}">
                     @csrf
-                    <label class="field" for="email">✉ &nbsp; Correo electrónico</label>
-                    <input class="input" id="email" type="email" name="email" value="{{ old('email', 'sofia@crm.test') }}" autocomplete="email" required autofocus>
+                <label class="field" for="email">✉ &nbsp; Correo electrónico</label>
+                <input class="input" id="email" type="email" name="email" value="{{ old('email') }}" autocomplete="email" required autofocus>
                     <label class="field" for="password">▣ &nbsp; Contraseña</label>
-                    <div class="password-wrap"><input class="input" id="password" type="password" name="password" value="NexusCRM2026!" autocomplete="current-password" required><button class="password-toggle" type="button" aria-label="Mostrar contraseña" onclick="togglePassword()">◉</button></div>
+                    <div class="password-wrap"><input class="input" id="password" type="password" name="password" autocomplete="current-password" required><button class="password-toggle" type="button" aria-label="Mostrar contraseña" onclick="togglePassword()">◉</button></div>
                     <div class="form-options"><label><input type="checkbox" name="remember" value="1" checked> <span>Recordarme</span></label><a href="#" onclick="return false;">¿Olvidaste tu contraseña?</a></div>
                     <button class="btn" type="submit">↪ &nbsp; Ingresar a mi cuenta →</button>
                 </form>
             </div>
         </section>
     </main>
-    <script>function togglePassword(){const input=document.getElementById('password');input.type=input.type==='password'?'text':'password';}</script>
+    <script>
+        function togglePassword(){const input=document.getElementById('password');input.type=input.type==='password'?'text':'password';}
+        document.addEventListener('DOMContentLoaded', function () {
+            document.querySelector('.form-options')?.remove();
+        });
+    </script>
 </body>
 </html>

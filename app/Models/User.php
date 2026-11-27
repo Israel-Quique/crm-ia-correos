@@ -13,6 +13,13 @@ class User extends Authenticatable
     /** @use HasFactory<UserFactory> */
     use HasFactory, Notifiable;
 
+    public function roles() { return $this->belongsToMany(Role::class); }
+
+    public function hasPermission(string $permission): bool
+    {
+        return $this->roles()->whereHas('permissions', fn ($q) => $q->where('slug', $permission))->exists();
+    }
+
     /**
      * The attributes that are mass assignable.
      *

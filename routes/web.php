@@ -6,6 +6,8 @@ use App\Http\Controllers\OllamaController;
 use App\Http\Controllers\WhatsAppWebhookController;
 use App\Http\Controllers\WhatsAppMediaController;
 use Illuminate\Support\Facades\DB;
+use App\Http\Controllers\UserRoleController;
+use App\Http\Controllers\AuthController;
 
 Route::get('/', fn () => redirect()->route('login'));
 Route::view('/login', 'auth.login')->name('login');
@@ -14,20 +16,24 @@ Route::post('/login', function () {
         'email' => ['required', 'email'],
         'password' => ['required', 'string'],
     ]);
+    $credentials['email'] = strtolower(trim($credentials['email']));
 
-    if (! Auth::attempt($credentials, request()->boolean('remember'))) {
+    if (! Auth::attempt($credentials, false)) {
         return back()->withErrors(['email' => 'Las credenciales no son válidas.'])->withInput();
     }
 
     request()->session()->regenerate();
     return redirect()->route('chat');
 })->name('login.store');
+// Flujo de autenticación principal: mantiene una única sesión y no recuerda credenciales.
+Route::get('/login', [AuthController::class, 'showLogin'])->name('login');
+Route::post('/login', [AuthController::class, 'login'])->name('login.store');
 Route::get('/webhooks/whatsapp', [WhatsAppWebhookController::class, 'verify']);
 Route::post('/webhooks/whatsapp', [WhatsAppWebhookController::class, 'receive']);
 // Ruta compatible con la configuración de Meta y con el CRM anterior.
 Route::get('/api/integrations/whatsapp/webhook', [WhatsAppWebhookController::class, 'verify']);
 Route::post('/api/integrations/whatsapp/webhook', [WhatsAppWebhookController::class, 'receive']);
-Route::middleware('auth')->group(function () {
+Route::middleware('local.admin')->group(function () {
     Route::get('/auditoria', function () {
         return view('audit-log-real', [
             'events' => \App\Models\AuditLog::with('user')->latest()->paginate(13),
@@ -126,6 +132,15 @@ Route::middleware('auth')->group(function () {
         request()->session()->regenerateToken();
         return redirect()->route('login');
     })->name('logout');
+    Route::get('/usuarios-roles', [UserRoleController::class, 'index'])->name('users-roles');
+    Route::get('/usuarios', [UserRoleController::class, 'users'])->name('users.index');
+    Route::get('/roles', [UserRoleController::class, 'roles'])->name('roles.index');
+    Route::post('/usuarios', [UserRoleController::class, 'storeUser'])->name('users.store');
+    Route::put('/usuarios/{user}', [UserRoleController::class, 'updateUser'])->name('users.update');
+    Route::delete('/usuarios/{user}', [UserRoleController::class, 'destroyUser'])->name('users.destroy');
+    Route::post('/roles', [UserRoleController::class, 'storeRole'])->name('roles.store');
+    Route::put('/roles/{role}', [UserRoleController::class, 'updateRole'])->name('roles.update');
+    Route::delete('/roles/{role}', [UserRoleController::class, 'destroyRole'])->name('roles.destroy');
     Route::post('/api/assistant/chat', [OllamaController::class, 'chat'])->name('assistant.chat');
     Route::view('/assistant', 'assistant')->name('assistant');
     Route::redirect('/chat-automatizado', '/automatizacion');
